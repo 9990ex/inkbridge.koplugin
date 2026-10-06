@@ -70,6 +70,7 @@ end
 
 local InkBridge = dofile(PLUGIN_DIR .. "/main.lua")
 local WebDAV    = require("inkbridge_webdav")
+local State     = require("inkbridge_state")
 
 -- ── 断言框架 ───────────────────────────────────────────────────────────
 local passed, failed = 0, 0
@@ -108,6 +109,7 @@ end
 -- ============================================================================
 print("== 1. _history_name（云端文件名生成）==")
 -- ============================================================================
+-- 目标格式：<书名>-MMDD-HHMMSS-<设备名>.<短哈希>.InkBridge.txt
 do
     local plugin = new_plugin()
     local entry = {
@@ -119,9 +121,27 @@ do
     }
     local name = plugin:_history_name(entry)
     contains("以书名开头", name, "死人经-")
-    contains("含设备名+设备号后四位", name, "-汉王C7T8147.")
-    contains("含短哈希", name, ".deadbeef.InkBridge.txt")
+    contains("含短哈希（机器认书用，不能去掉）", name, ".deadbeef.InkBridge.txt")
     check("扩展名为 .txt", name:sub(-4) == ".txt")
+
+    -- 时间部分：含月份、纯 ASCII、可排序。旧格式 %d%H日%M分%S秒 不含月份，
+    -- 9 月 6 日与 10 月 6 日会生成同样的名字。
+    local expect_ts = os.date("%m%d-%H%M%S", 1760000000)
+    contains("时间格式为 MMDD-HHMMSS", name, "死人经-" .. expect_ts .. "-")
+    check("时间部分不含汉字（日/分/秒）",
+        name:find("日", 1, true) == nil and name:find("分", 1, true) == nil
+        and name:find("秒", 1, true) == nil)
+    eq("时间部分长度为 11", #expect_ts, 11)
+end
+
+do
+    -- 设备标识：只保留设备名，不再拼设备 ID 尾四位
+    local plugin = new_plugin({ device_id = "1791209408-8147" })
+    local name = plugin:_history_name({
+        book_id = "deadbeefcafe1234", book_name = "书", updated_at = 1760000000,
+    })
+    contains("设备名后面直接跟短哈希（不含设备 ID 尾四位）", name, "-汉王C7T.deadbeef.InkBridge.txt")
+    check("文件名里不出现设备 ID 尾四位", name:find("8147", 1, true) == nil, name)
 end
 
 do
@@ -131,22 +151,31 @@ do
         book_id = "deadbeefcafe1234", book_name = 'a/b:c*?"<>|d',
         updated_at = 1760000000,
     })
-    check("书名中的非法字符已替换", name:find("[/:*?\"<>|]", 1) == nil or name:find("InkBridge", 1, true) ~= nil, name)
     contains("非法字符替换为下划线", name, "a_b_c__")
+    check("结果里没有路径分隔符等非法字符", name:find("[/:*?]", 1) == nil, name)
 end
 
 do
-    -- 设备 id 不含 4 位数字尾部时的回退分支
-    local plugin = new_plugin({ device_id = "device-with-no-digits" })
-    local name = plugin:_history_name({ book_id = "deadbeefcafe1234", book_name = "book", updated_at = 1760000000 })
-    contains("回退取字母数字末尾四位", name, "gits.")
+    -- 长度限制必须按字符算：按字节截断会把一个汉字劈成半个，产生非法 UTF-8
+    local plugin = new_plugin({ device_label = string.rep("设", 40) })
+    local long_name = string.rep("长", 100)
+    local name = plugin:_history_name({
+        book_id = "deadbeefcafe1234", book_name = long_name, updated_at = 1760000000,
+    })
+    local prefix = name:match("^(.-)%-%d%d%d%d%-%d%d%d%d%d%d%-") or ""
+    eq("书名截断到 40 个字符", State._utf8_len(prefix), 40)
+    local label = name:match("%-%d%d%d%d%-%d%d%d%d%d%d%-(.-)%.deadbeef")
+    eq("设备名截断到 16 个字符", State._utf8_len(label or ""), 16)
 end
 
 do
-    -- 设备 id 为空串：不能被 tostring 的 "" 绕过，应回退为 "device"
-    local plugin = new_plugin({ device_id = "" })
-    local name = plugin:_history_name({ book_id = "deadbeefcafe1234", book_name = "book", updated_at = 1760000000 })
-    contains("空设备 id 回退为 device", name, "device.")
+    -- 书名缺失时用回退名，不能生成以 "-" 开头的文件名
+    local plugin = new_plugin()
+    local name = plugin:_history_name({
+        book_id = "deadbeefcafe1234", book_name = "", updated_at = 1760000000,
+    })
+    contains("书名缺失时回退为 book", name, "book-")
+    check("不以分隔符开头", name:sub(1, 1) ~= "-")
 end
 
 -- ============================================================================

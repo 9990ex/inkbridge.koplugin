@@ -28,11 +28,14 @@ local function show(text)
     UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
 end
 
-local function safe_filename_component(value, fallback, max_length)
+-- 文件名片段清洗：替换掉文件系统不接受的字符，并做长度限制。
+-- 长度必须**按字符**截断：按字节截断会把一个汉字劈成半个，
+-- 生成非法 UTF-8 文件名（State._utf8_sub 是为此写的）。
+local function safe_filename_component(value, fallback, max_chars)
     value = tostring(value or "")
     value = value:gsub("[\\/:*?\"<>|]", "_"):gsub("[%c]", "_")
     if value == "" then value = fallback end
-    return value:sub(1, max_length or 64)
+    return State._utf8_sub(value, max_chars or 40)
 end
 
 -- 插件初始化：读取设备身份和已经保存的 WebDAV 配置。
@@ -88,22 +91,27 @@ function InkBridge:_history_prefix(entry)
     return short_id
 end
 
+-- 生成云端历史文件名：<书名>-MMDD-HHMMSS-<设备名>.<短哈希>.InkBridge.txt
+--
+-- 每一段的用途（要改名请先看完）：
+--   * 书名    —— 只给人看。云端目录里有很多本书，浏览时要认得出。
+--   * 时间    —— 只给人看。MMDD-HHMMSS：可读、可按字典序排、纯 ASCII。
+--                旧格式是 %d%H日%M分%S秒（“日+时”），**不含月份** ——
+--                9 月 6 日和 10 月 6 日会生成一模一样的名字；而且“日/分/秒”
+--                三个汉字本身多占 9 字节。
+--   * 设备名  —— 只给人看。同一本书在几台设备上都读过时用来区分。
+--                曾经还拼上设备 ID 尾四位（如 c7t8147），那是多余的：
+--                设备名已经在前面，没有任何逻辑读它。
+--   * 短哈希  —— **机器用，不能去掉**。它是 partialMD5 的前 8 位，另一台设备
+--                就是靠它筛出“同一本书”的历史记录（见 is_inkbridge_record）。
+--   * .InkBridge.txt —— 命名空间标记 + 扩展名。扩展名必须是 .txt：
+--                KOReader 的 WebDAV 列表按“是否为可打开的文档类型”过滤，
+--                .json 之类默认根本不显示（除非打开 show_unsupported）。
 function InkBridge:_history_name(entry)
-    -- 文件名中的时间按“日 + 小时 + 分钟 + 秒”显示，例如 0615日30分45秒。
-    -- 加入秒可以避免同一本书同一设备在同一分钟内重复上传时重名。
-    local timestamp = os.date("%d%H日%M分%S秒", tonumber(entry.updated_at) or os.time())
-    -- 设备 ID 的最后四位是生成时的短随机编号，例如 8147。
-    -- 只取这四位，避免把前面的时间戳也混进可读文件名。
-    local device_id = tostring(self.device_id or ""):match("(%d%d%d%d)$")
-    if not device_id then
-        device_id = tostring(self.device_id or "device"):gsub("[^%w]", ""):sub(-4)
-    end
-    if device_id == "" then device_id = "device" end
-    local device_label = safe_filename_component(self.device_label, "KOReader", 32)
-    local name = safe_filename_component(entry.book_name, "book", 96)
-    -- 使用 .txt 让 KOReader 默认的 WebDAV 文件列表显示它；文件内容
-    -- 仍然是 JSON，下载后由 State.decode 校验。
-    return name .. "-" .. timestamp .. "-" .. device_label .. device_id
+    local timestamp = os.date("%m%d-%H%M%S", tonumber(entry.updated_at) or os.time())
+    local device_label = safe_filename_component(self.device_label, "KOReader", 16)
+    local name = safe_filename_component(entry.book_name, "book", 40)
+    return name .. "-" .. timestamp .. "-" .. device_label
         .. "." .. self:_history_prefix(entry) .. ".InkBridge.txt"
 end
 
