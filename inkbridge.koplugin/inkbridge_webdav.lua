@@ -10,6 +10,7 @@ local InfoMessage = require("ui/widget/infomessage")
 local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local ButtonDialog = require("ui/widget/buttondialog")
+local util = require("util")
 
 local WebDAV = {}
 
@@ -24,6 +25,64 @@ end
 
 local function show(text)
     UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
+end
+
+-- provider.base 承载服务器配置（地址、用户名、密码）。provider 可能往 base 上
+-- 写字段（例如 Dropbox 的 run 会写 access_token），因此不能直接把插件保存的
+-- 设置表挂上去——那样这些写入会回落到 settings.reader.lua。上游 KOReader 在
+-- Cloud:uploadFile / Cloud:sync 里同样使用 util.tableDeepCopy(server) 传副本。
+local function provider_base(server)
+    if type(util.tableDeepCopy) == "function" then
+        return util.tableDeepCopy(server)
+    end
+    local copy = {}
+    for k, v in pairs(server or {}) do copy[k] = v end
+    return copy
+end
+
+-- 远端路径来自 WebDAV 服务器返回的文件名，不可信任，必须拒绝：
+-- 反斜杠、控制字符（含 CR/LF/NUL/TAB）、".." 以及 "://"。
+--
+-- 为什么不用模式匹配（Lua pattern）：这里曾写成
+--     remote_path:find("[\\\r\n\0]", 1)
+-- 而这个模式是**非法的**——Lua 的模式扫描器在字符类里遇到 NUL 字节时会认为模式
+-- 已经结束，于是抛出 “malformed pattern (missing ']')”。它位于 download() 的
+-- 开头且无 pcall 保护，导致任何一次下载都会直接报错。
+-- 教训：NUL 在模式里必须写 %z，且字符类里的 NUL 极难目测。这里改用逐字节检查，
+-- 彻底不依赖模式转义语义，行为可被单元测试完全覆盖。
+local function is_safe_remote_path(path)
+    if type(path) ~= "string" or path == "" then return false end
+    if path:find("..", 1, true) then return false end
+    if path:find("://", 1, true) then return false end
+    for i = 1, #path do
+        local byte = path:byte(i)
+        if byte < 32 or byte == 127 or byte == 92 then return false end
+    end
+    return true
+end
+
+-- 判断一个远端文件名是不是本书的 InkBridge 记录。
+--
+-- 这里必须特别小心 Lua 的模式语义：**Lua 模式没有“或”运算符**。
+-- 旧实现写成
+--     item.text:match("^.+" .. suffix .. "(txt|json)$")
+-- 原意是“扩展名是 txt 或 json”，但 `|` 在 Lua 模式里只是普通字符，整个模式
+-- 实际要求在文件名结尾出现字面量 "txt|json"，因此**永远无法命中**：
+-- list_history 永远返回空列表，下载流程找不到任何历史记录。
+-- 现在改为先取出扩展名逐个比较，再用字面量比较主干，彻底绕开模式语义。
+local function is_inkbridge_record(name, prefix)
+    if type(name) ~= "string" or type(prefix) ~= "string" or prefix == "" then
+        return false
+    end
+    local stem, ext = name:match("^(.*)%.([%a%d]+)$")
+    if not stem or (ext ~= "txt" and ext ~= "json") then return false end
+    -- 新格式：<书名>-<时间>-<设备>.<短哈希>.InkBridge.txt
+    local new_suffix = "." .. prefix .. ".InkBridge"
+    if stem:sub(-#new_suffix) == new_suffix then return true end
+    -- 旧格式（0.1.x）：InkBridge-<短哈希>-....txt
+    -- 短哈希理论上来自 partialMD5（十六进制），但仍做转义以防出现模式元字符。
+    local escaped = prefix:gsub("([^%w])", "%%%1")
+    return stem:find("^InkBridge%-" .. escaped .. "%-", 1) ~= nil
 end
 
 -- 打开 KOReader 的 WebDAV 目标选择界面，并保存用户选中的 server table。
@@ -106,9 +165,13 @@ function WebDAV.upload(plugin, staged_path, callback)
             return
         end
 
-        provider.base = server
+        -- 兼容路径：base 由我们自己设置，因此也由我们恢复（与 download /
+        -- list_history 保持一致）；用副本而非设置表本身，理由见 provider_base。
+        local old_base = provider.base
+        provider.base = provider_base(server)
         provider.run(function()
             local code = provider.uploadFile(server.url, staged_path, nil)
+            provider.base = old_base
             if type(code) == "number" and code >= 200 and code < 300 then
                 finish(true)
             else
@@ -144,18 +207,15 @@ function WebDAV.download(plugin, remote_path, callback)
         return
     end
 
-    if type(remote_path) ~= "string" or remote_path == ""
-            or remote_path:find("..", 1, true)
-            or remote_path:find("://", 1, true)
-            or remote_path:find("[\\\r\n\0]", 1) then
+    if not is_safe_remote_path(remote_path) then
         callback(false, nil, "invalid remote path")
         return
     end
     local path = plugin:_download_staging_path(remote_path:match("([^/]+)$") or "record")
     local old_base = provider.base
     -- WebDAV provider 的公开方法通过 base 读取地址、用户名和密码。
-    -- 临时使用已保存的 server，完成后恢复原对象，避免影响云存储界面。
-    provider.base = server
+    -- 临时使用已保存 server 的副本，完成后恢复原对象，避免影响云存储界面。
+    provider.base = provider_base(server)
     local finished = false
     local function finish(ok, remote, err)
         if finished then return end
@@ -208,7 +268,7 @@ function WebDAV.list_history(plugin, prefix, callback)
         return
     end
     local old_base = provider.base
-    provider.base = server
+    provider.base = provider_base(server)
     local finished = false
     local function finish(ok, entries, err)
         if finished then return end
@@ -231,11 +291,7 @@ function WebDAV.list_history(plugin, prefix, callback)
         for _, item in ipairs(result) do
             -- 同时识别旧格式 InkBridge-<hash>-... 和新格式
             -- ...<hash>.InkBridge.txt，升级后不会丢失历史记录。
-            local old_prefix = "^InkBridge%-" .. prefix .. "%-"
-            local new_suffix = "%." .. prefix .. "%.InkBridge%."
-            if item.is_file and type(item.text) == "string"
-                    and (item.text:match(old_prefix .. ".+%.(txt|json)$")
-                        or item.text:match("^.+" .. new_suffix .. "(txt|json)$")) then
+            if item.is_file and is_inkbridge_record(item.text, prefix) then
                 table.insert(entries, item)
             end
         end
@@ -312,5 +368,9 @@ function WebDAV.confirm_jump(plugin, remote)
         end,
     })
 end
+
+-- 导出为测试钩子（下划线前缀表示非稳定接口，与 Syncery 的写法一致）。
+WebDAV._is_safe_remote_path  = is_safe_remote_path
+WebDAV._is_inkbridge_record  = is_inkbridge_record
 
 return WebDAV

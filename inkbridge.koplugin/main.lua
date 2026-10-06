@@ -13,6 +13,7 @@ local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
 local DataStorage = require("datastorage")
+local NetworkMgr = require("ui/network/manager")
 
 local State = require("inkbridge_state")
 local WebDAV = require("inkbridge_webdav")
@@ -195,6 +196,10 @@ function InkBridge:_sync(entry, mode)
     -- 历史记录是追加式文件，直接上传当前文件名即可。
     -- 只有 Cloud Storage 收到 provider 的 2xx 回调后才显示成功。
     WebDAV.upload(self, history_path, function(upload_ok, upload_err)
+        -- 无论成功失败都清掉本地暂存文件。它是每次上传新建的（文件名含秒级时间戳），
+        -- 不清理会让设备设置目录无限增长。必须放在回调里：provider 要在这之后
+        -- 才真正读完该文件；且回调只会触发一次（WebDAV.upload 内部有去重）。
+        os.remove(history_path)
         if upload_ok then
             show("InkBridge: 阅读进度上传成功。")
         else
@@ -211,11 +216,32 @@ function InkBridge:_position_differs(left, right)
     return math.abs((tonumber(left.percent) or 0) - (tonumber(right.percent) or 0)) > 0.0001
 end
 
+-- 所有同步动作都先确认网络，再执行。
+--
+-- 为什么需要这一步：WebDAV provider 的 run() 内部是
+-- NetworkMgr:willRerunWhenConnected()——未联网时它**直接返回且不执行回调**，
+-- 只是把动作登记到“联网后重跑”。于是用户点菜单后既没有成功提示也没有失败提示，
+-- 看起来就像插件坏了。这里用 promptWifiOn 明确征询用户并等待连接，
+-- 连接失败则给出可见的取消提示，从根上消除“静默无反应”。
+function InkBridge:_with_network(action)
+    if NetworkMgr:isConnected() then
+        action()
+        return
+    end
+    NetworkMgr:promptWifiOn(function()
+        if NetworkMgr:isConnected() then
+            action()
+        else
+            show("InkBridge: 未连接网络，操作已取消。")
+        end
+    end)
+end
+
 -- 菜单动作：读取当前页并发起同步。
 function InkBridge:upload_current()
     local entry, err = self:_book_context()
     if not entry then show("InkBridge: " .. tostring(err)); return end
-    self:_sync(entry, "upload")
+    self:_with_network(function() self:_sync(entry, "upload") end)
 end
 
 -- 菜单动作：读取当前页并发起同步。
@@ -223,7 +249,7 @@ end
 function InkBridge:download_current()
     local entry, err = self:_book_context()
     if not entry then show("InkBridge: " .. tostring(err)); return end
-    self:_sync(entry, "download")
+    self:_with_network(function() self:_sync(entry, "download") end)
 end
 
 -- KOReader 调用这个方法，把插件菜单加入工具菜单。
