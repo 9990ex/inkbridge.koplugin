@@ -18,6 +18,7 @@ local NetworkMgr = require("ui/network/manager")
 local State = require("inkbridge_state")
 local WebDAV = require("inkbridge_webdav")
 local Meta = require("_meta")
+local Moonsync = require("inkbridge_moonsync")
 
 -- KOReader 插件通常继承 WidgetContainer。
 -- extend{} 会创建一个可以接收 KOReader 生命周期事件的插件类。
@@ -278,6 +279,7 @@ function InkBridge:addToMainMenu(menu_items)
                 { text = "设置 WebDAV 目标", callback = function() WebDAV.pick_server(self) end },
                 { text = "上传当前阅读进度", callback = function() self:upload_current() end },
                 { text = "下载并检查阅读进度", callback = function() self:download_current() end },
+                { text = "从静读天下读取进度", callback = function() Moonsync.import_from_moon(self) end },
             }
         end,
     }
