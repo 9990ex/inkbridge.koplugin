@@ -67,6 +67,14 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 InkBridge 是独立项目，与 Syncery 没有官方隶属关系。早期设计会参考现有开源项目的经验，
 但不会把未完成的实验代码当作本项目的正式实现。
 
+## 开发方式
+
+**Powered by DeepSeek** —— 本项目的代码、回归测试与文档均在 DeepSeek 的辅助下完成。
+所有改动都要跑过 174 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
+关键链路由真机验证。
+
+> DeepSeek 在这里是开发工具。本项目与 DeepSeek 官方没有任何隶属关系。
+
 ## 名称
 
 **InkBridge / 墨桥**：连接不同阅读设备，也连接不同阅读软件之间的阅读进度。
