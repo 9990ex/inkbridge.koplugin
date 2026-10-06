@@ -350,6 +350,121 @@ do
 end
 
 -- ============================================================================
+print("== 5. _plan_jump（跳转方式分级）==")
+-- ============================================================================
+-- 背景：记录里的 percent 来自 ReaderFooter:getBookProgress() = pageno/pages，
+-- 是“页序占本机总页数的比例”，依赖排版（两台设备可能 8922 页 vs 8689 页）。
+-- 所以跳转必须优先使用与排版无关的锚点：xpointer -> 文本锚点 -> 页数比例。
+local XP_OK  = "/body/DocFragment[305]/body/div/p[67]/text().0"
+local XP_BAD = "/body/DocFragment[901]/body/div/p[1]/text().0"
+local ANCHOR = "顾慎为很清楚这些刀客的热情能持续多久"
+local calls  = {}
+
+local function plan_doc(opts)
+    opts = opts or {}
+    calls = {}
+    return {
+        info = { has_pages = opts.has_pages or false, doc_height = 100000 },
+        isXPointerInDocument = function(_, xp)
+            calls.validated = xp
+            return opts.xpointer_ok or false
+        end,
+        findAllText = function(_, pattern, ci, ctx, max_hits)
+            calls.search = { pattern = pattern, ci = ci, max_hits = max_hits }
+            return opts.hits
+        end,
+        getPosFromXPointer = function(_, xp)
+            if xp == "hit-far" then return 10000 end
+            return 90000
+        end,
+        clearSelection = function() calls.cleared = true end,
+        getPageCount = function() return 8689 end,
+    }
+end
+
+local function plan_ui(doc, rolling)
+    if rolling == "none" then return { document = doc } end
+    return { document = doc, rolling = rolling or { getLastProgress = function() end } }
+end
+
+do
+    local doc = plan_doc({ xpointer_ok = true })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, percent = 0.249 })
+    eq("xpointer 可解析时优先用它", plan and plan.method, "xpointer")
+    eq("plan 带回 xpointer", plan and plan.xpointer, XP_OK)
+    eq("不触发全文搜索", calls.search, nil)
+end
+
+do
+    -- xpointer 失效（跨设备最常见）-> 文本锚点；多个命中时用 pos_percent 消歧
+    local doc = plan_doc({
+        xpointer_ok = false,
+        hits = {
+            { start = "hit-far",  ["end"] = "e1" },   -- 内容位置 10000
+            { start = "hit-near", ["end"] = "e2" },   -- 内容位置 90000
+        },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.9, percent = 0.249,
+    })
+    eq("xpointer 失效时降级到文本锚点", plan and plan.method, "text")
+    eq("多命中时取最接近 pos_percent 的", plan and plan.xpointer, "hit-near")
+    eq("带回命中总数", plan and plan.hits, 2)
+    check("搜索参数正确（锚点/忽略大小写/限 8 条）",
+        calls.search and calls.search.pattern == ANCHOR
+        and calls.search.ci == true and calls.search.max_hits == 8,
+        calls.search and (calls.search.pattern .. "/" .. tostring(calls.search.ci) .. "/" .. tostring(calls.search.max_hits)))
+    check("搜索顺带产生的高亮已清理", calls.cleared == true)
+end
+
+do
+    -- 有锚点但搜不到 -> 继续降级到页数比例
+    local doc = plan_doc({ xpointer_ok = false, hits = {} })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.249,
+        percent = 0.24904729881192558,
+    })
+    eq("搜不到则退回页数比例", plan and plan.method, "percent")
+    -- 用户实测：在 8689 页的设备上，0.2490473 * 8689 向下取整 + 1 = 2164
+    eq("页码 = floor(percent * 本机总页数) + 1", plan and plan.page, 2164)
+end
+
+do
+    -- 旧记录没有锚点字段，应安静降级而不是报错
+    local doc = plan_doc({ xpointer_ok = false })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { percent = 0.5 })
+    eq("旧记录降级为页数比例", plan and plan.method, "percent")
+    eq("页码正确", plan and plan.page, math.floor(0.5 * 8689) + 1)
+end
+
+do
+    -- 固定版式（PDF/CBZ）：页码由内容决定，直接用远端页码
+    local doc = plan_doc({ has_pages = true })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc, "none") }, { page = 12, percent = 0.5 })
+    eq("固定版式用页码", plan and plan.method, "page")
+    eq("页码取记录里的值", plan and plan.page, 12)
+end
+
+do
+    -- 固定版式但没有页码 -> 退回页数比例
+    local doc = plan_doc({ has_pages = true })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc, "none") }, { percent = 0.5 })
+    eq("无页码时退回页数比例", plan and plan.method, "percent")
+end
+
+do
+    local plan, reason = WebDAV._plan_jump({ ui = {} }, { percent = 0.5 })
+    eq("没有文档时返回 nil", plan, nil)
+    eq("原因说明", reason, "no_document")
+end
+
+do
+    local plan, reason = WebDAV._plan_jump({ ui = plan_ui(plan_doc({})) }, {})
+    eq("完全没有位置信息时返回 nil", plan, nil)
+    eq("原因说明", reason, "no_position")
+end
+
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end
 print("全部通过。")
