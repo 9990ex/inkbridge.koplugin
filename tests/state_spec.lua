@@ -95,6 +95,30 @@ do
     eq("_utf8_sub 不越界", State._utf8_sub("一二", 99), "一二")
 end
 
+-- ⑤ 锚点带字符偏移：xpointer 结尾的 /text().N 决定锚点从哪里开始
+do
+    eq("_xpointer_text_offset 取 N", State._xpointer_text_offset("/body/x/p[3]/text().23"), 23)
+    eq("text().0 得到 0", State._xpointer_text_offset("/body/x/p[3]/text().0"), 0)
+    eq("没有 text() 时为 0", State._xpointer_text_offset("/body/x/p[3]"), 0)
+    eq("N 非数字时为 0", State._xpointer_text_offset("/body/x/text().abc"), 0)
+    eq("nil 安全", State._xpointer_text_offset(nil), 0)
+
+    eq("_utf8_sub_range 取中间", State._utf8_sub_range("一二三四五", 2, 2), "二三")
+    eq("_utf8_sub_range 到尾", State._utf8_sub_range("一二三", 2, 99), "二三")
+    eq("_utf8_sub_range 越界为空", State._utf8_sub_range("一二三", 9, 2), "")
+    eq("_utf8_sub_range count=0 为空", State._utf8_sub_range("一二三", 1, 0), "")
+
+    local para = "顾慎为很清楚这些刀客的热情能持续多久，等个三五天再说。"
+    local at0 = State._make_anchor(para, 0)
+    local at5 = State._make_anchor(para, 5)
+    eq("偏移 0 -> 段落开头", at0, State._utf8_sub(para, 20))
+    eq("偏移 5 -> 从第 6 个字开始", at5, State._utf8_sub(State._utf8_sub_range(para, 6, 80), 20))
+    check("两种偏移得到的锚点不同", at0 ~= at5)
+    check("带偏移的锚点不是段落开头", para:find(at5, 1, true) ~= 1)
+    -- 取够长度才成立：偏移太靠后（用字节数当偏移必然超出字符数）要回退到段落开头
+    eq("偏移越界时回退到段落开头", State._make_anchor(para, #para), at0)
+end
+
 -- ============================================================================
 print("== 2. read_position（位置采集）==")
 -- ============================================================================
@@ -115,6 +139,19 @@ do
     check("text_anchor 已提取", entry.text_anchor ~= nil)
     eq("text_anchor 为段落开头 20 字", entry.text_anchor, State._utf8_sub(PARA, 20))
     eq("book_name 去掉 .epub 后缀", entry.book_name, "死人经 (冰临神下) (Z-Library)")
+end
+
+do
+    -- xpointer 带非零偏移时，采集到的锚点应来自该偏移处（而不是段落开头）
+    local xp_mid = "/body/DocFragment[305]/body/div/p[67]/text().5"
+    local ui = {
+        document = make_doc(),
+        rolling = { getLastProgress = function() return xp_mid end },
+    }
+    local entry = State.read_position(ui)
+    eq("xpointer 原样保留", entry.xpointer, xp_mid)
+    eq("锚点从字符偏移处取", entry.text_anchor, State._make_anchor(PARA, 5))
+    check("锚点不是段落开头", entry.text_anchor ~= State._make_anchor(PARA, 0))
 end
 
 do

@@ -27,6 +27,76 @@ local function show(text)
     UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
 end
 
+-- ── 内部错误码 → 用户看得懂的中文 ─────────────────────────────────────────
+--
+-- 这一层刻意与产生错误的地方分开：回调里返回的仍是稳定的英文错误码
+-- （测试和排查都依赖它们），只有要显示给用户时才翻译成人话。
+local ERROR_TEXT = {
+    -- 记录读取/解码
+    ["missing"]                     = "云端没有这条记录",
+    ["empty"]                       = "记录内容为空",
+    ["invalid_json"]                = "记录不是合法的 JSON",
+    ["unsupported_schema"]          = "记录格式版本不受支持（可能是更新版本的插件写的）",
+    ["missing_book_id"]             = "记录缺少书籍标识",
+    ["invalid_book_name"]           = "记录里的书名格式不正确",
+    ["invalid_percent"]             = "记录里的阅读百分比越界",
+    ["invalid_xpointer"]            = "记录里的 xpointer 格式不正确",
+    ["No open book"]                = "当前没有打开的书",
+    ["No book is open"]             = "当前没有打开的书",
+    ["KOReader could not calculate the book content hash"] =
+        "无法计算这本书的内容哈希（partialMD5）",
+    -- 云存储
+    ["WebDAV destination is not configured"] =
+        "还没有设置 WebDAV 目标（菜单 → 设置 WebDAV 目标）",
+    ["KOReader WebDAV provider is unavailable"] =
+        "KOReader 的 WebDAV 组件不可用（请在插件管理里确认 Cloud storage 已启用）",
+    ["local upload file is missing"] = "本地暂存文件不存在",
+    ["invalid remote path"]          = "云端返回的文件名不合法，已拒绝",
+    ["WebDAV list failed"]           = "读取云端目录失败（网络或认证问题）",
+    ["WebDAV upload failed"]         = "上传失败",
+    -- 跳转规划
+    ["no_document"]                  = "当前没有打开的文档",
+    ["no_record"]                    = "远端记录格式不正确",
+    ["no_position"]                  = "记录里没有任何位置信息",
+    ["no_page_count"]                = "无法获知本书的页数",
+}
+
+-- HTTP 状态码的常见含义，直接写给用户看，省得他们去查
+local HTTP_HINT = {
+    ["401"] = "（认证失败：请检查 WebDAV 用户名和密码）",
+    ["403"] = "（服务器拒绝访问：请检查该目录的权限）",
+    ["404"] = "（云端找不到该文件）",
+    ["405"] = "（服务器不允许该操作）",
+    ["409"] = "（路径冲突：请确认目标目录存在）",
+    ["412"] = "（文件已被其他设备改动）",
+    ["423"] = "（文件被锁定）",
+    ["507"] = "（云端空间不足）",
+}
+
+--- 把内部错误码翻译成给用户看的中文。
+--- 认不出的错误**原样返回**，不吞掉信息（宁可难看，也不要丢失排查线索）。
+function WebDAV.describe_error(err)
+    if err == nil then return "未知错误" end
+    local text = tostring(err)
+
+    if ERROR_TEXT[text] then return ERROR_TEXT[text] end
+
+    -- 某些 provider 会把内层错误包一层：remote_record_invalid_json
+    local inner = text:match("^remote_record_(.+)$")
+    if inner then
+        return "远端记录无法解析：" .. WebDAV.describe_error(inner)
+    end
+
+    -- 带 HTTP 状态码的形式：把码单独摘出来，并附上常见原因
+    local code = text:match("HTTP%s+(%d%d%d)")
+    if code then
+        local action = text:find("download", 1, true) and "下载失败" or "上传失败"
+        return action .. "（HTTP " .. code .. "）" .. (HTTP_HINT[code] or "")
+    end
+
+    return text
+end
+
 -- provider.base 承载服务器配置（地址、用户名、密码）。provider 可能往 base 上
 -- 写字段（例如 Dropbox 的 run 会写 access_token），因此不能直接把插件保存的
 -- 设置表挂上去——那样这些写入会回落到 settings.reader.lua。上游 KOReader 在
@@ -92,20 +162,25 @@ function WebDAV.pick_server(plugin)
         ui.cloudstorage:onShowCloudStorageList(function(server)
             plugin.server = server
             G_reader_settings:saveSetting("inkbridge_webdav_server", server)
-            show("InkBridge WebDAV destination saved.")
+            show("墨桥：WebDAV 目标已保存。")
         end)
         return
     end
     local ok, SyncService = pcall(require, "apps/cloudstorage/syncservice")
     if not ok or not SyncService then
-        show("KOReader cloud storage picker is unavailable.")
+        -- 现行 KOReader 的云存储就是 plugins/cloudstorage.koplugin 自己，它会把自己
+        -- 注册为 ui.cloudstorage（见其 main.lua 的 Cloud:init 与 PluginLoader 的
+        -- registerModule）。更早的版本把云存储放在 frontend/apps/cloudstorage/，
+        -- 那条路径和对应的 SyncService 组件都已不存在 —— 这里没有可用的兜底，
+        -- 直接给出可执行的提示，而不是让用户对着“picker unavailable”猜。
+        show("墨桥：找不到 KOReader 的云存储功能。请在「插件管理」里启用 Cloud storage 后重试。")
         return
     end
     local picker = SyncService:new{}
     picker.onConfirm = function(server)
         plugin.server = server
         G_reader_settings:saveSetting("inkbridge_webdav_server", server)
-        show("InkBridge WebDAV destination saved.")
+        show("墨桥：WebDAV 目标已保存。")
     end
     UIManager:show(picker)
 end
@@ -211,7 +286,8 @@ function WebDAV.download(plugin, remote_path, callback)
         callback(false, nil, "invalid remote path")
         return
     end
-    local path = plugin:_download_staging_path(remote_path:match("([^/]+)$") or "record")
+    -- 本地临时文件由插件决定（纯 ASCII 名，见 main.lua 的 _download_staging_path）
+    local path = plugin:_download_staging_path()
     local old_base = provider.base
     -- WebDAV provider 的公开方法通过 base 读取地址、用户名和密码。
     -- 临时使用已保存 server 的副本，完成后恢复原对象，避免影响云存储界面。
@@ -320,7 +396,7 @@ function WebDAV.choose_history(plugin, entries, on_select)
         })
     end
     if #buttons == 0 then
-        show("InkBridge: 没有找到这本书的历史记录。")
+        show("墨桥：没有找到这本书的历史记录。")
         return
     end
     table.insert(buttons, {
@@ -382,7 +458,19 @@ function WebDAV._plan_jump(plugin, remote)
         local anchor = remote.text_anchor
         if type(anchor) == "string" and anchor ~= ""
                 and type(doc.findAllText) == "function" then
+            -- 全文搜索跑在 UI 线程上，大书可能要一两秒，期间界面是冻住的。
+            -- 照 KOReader 自己搜索模块（readersearch.lua）的做法先吞掉输入，
+            -- 避免用户连点造成动作重复；搜索结束后无论成败都恢复。
+            local ok_dev, Device = pcall(require, "device")
+            local can_ignore_input = ok_dev and Device
+                and type(Device.setIgnoreInput) == "function"
+            if can_ignore_input then
+                pcall(Device.setIgnoreInput, Device, true)
+            end
             local ok, hits = pcall(doc.findAllText, doc, anchor, true, 0, 8, false)
+            if can_ignore_input then
+                pcall(Device.setIgnoreInput, Device, false)
+            end
             if ok and type(hits) == "table" and #hits > 0 then
                 local height = doc.info and tonumber(doc.info.doc_height) or nil
                 local ratio = tonumber(remote.pos_percent)
@@ -439,7 +527,7 @@ function WebDAV.confirm_jump(plugin, remote)
 
     local plan, reason = WebDAV._plan_jump(plugin, remote)
     if not plan then
-        show("InkBridge: 无法在本机文档上还原远端位置（" .. tostring(reason) .. "）。")
+        show("墨桥：无法在本机文档上还原远端位置 —— " .. WebDAV.describe_error(reason))
         return
     end
 

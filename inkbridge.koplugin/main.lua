@@ -77,12 +77,6 @@ function InkBridge:_book_context()
     return entry
 end
 
--- 根据书籍内容哈希生成临时文件名。
--- 不能只使用 progress.json，否则多本书会在 WebDAV 上互相覆盖。
-function InkBridge:_staged_path(book_id)
-    return self:_staging_dir() .. "/inkbridge-progress-" .. book_id .. ".json"
-end
-
 -- 生成对用户友好的文件名前缀。短哈希仍保留，用来区分同名书籍；
 -- 书名只来自当前打开的文件名，不上传完整本地路径。
 function InkBridge:_history_prefix(entry)
@@ -130,10 +124,10 @@ function InkBridge:set_device_label()
                     self.device_label = label
                     G_reader_settings:saveSetting("inkbridge_device_label", label)
                     UIManager:close(dialog)
-                    show("InkBridge: 设备名称已保存。")
+                    show("墨桥：设备名称已保存。")
                 else
                     UIManager:close(dialog)
-                    show("InkBridge: 设备名称不能为空。")
+                    show("墨桥：设备名称不能为空。")
                 end
             end },
         }},
@@ -142,10 +136,15 @@ function InkBridge:set_device_label()
     dialog:onShowKeyboard()
 end
 
--- 只读下载使用单独的临时文件名，避免和 SyncService 的 .temp/.sync
--- 文件混用。该文件只在 WebDAV GET 期间存在，完成后立即删除。
-function InkBridge:_download_staging_path(remote_name)
-    return self:_staging_dir() .. "/" .. remote_name .. ".download"
+-- 只读下载用的本地临时文件。
+--
+-- 名字刻意用纯 ASCII，而不是沿用远端文件名（那是中文）：
+-- LuaJIT 在 Windows 上通过 ANSI 代码页打开文件，含中文的本地路径会直接报
+-- “Illegal byte sequence”。设备端是 Linux/UTF-8，本来不受影响，但没有理由
+-- 为了一个临时文件把这件事变成平台陷阱。
+-- 同一时刻只会进行一次下载（用户手动触发），固定名字不存在冲突。
+function InkBridge:_download_staging_path()
+    return self:_staging_dir() .. "/download.tmp"
 end
 
 -- 发起一次手动上传或只读下载。
@@ -153,9 +152,13 @@ function InkBridge:_sync(entry, mode)
     if mode == "download" then
         local prefix = self:_history_prefix(entry)
         WebDAV.list_history(self, prefix, function(ok, entries, list_err)
-            if not ok then show("InkBridge: 无法读取历史记录：" .. tostring(list_err)); return end
+            if not ok then
+                show("墨桥：读取云端历史记录失败 —— " .. WebDAV.describe_error(list_err))
+                return
+            end
+
             if #entries == 0 then
-                -- 兼容 0.1.x 只写一份哈希文件的旧记录。
+                -- 兼容 0.1.x 只写一份哈希文件的旧记录
                 local legacy_name = "inkbridge-progress-" .. entry.book_id .. ".json"
                 local legacy = (self.server.url or "")
                 legacy = legacy == "" and legacy_name or legacy .. "/" .. legacy_name
@@ -163,32 +166,33 @@ function InkBridge:_sync(entry, mode)
                     if legacy_ok and remote then
                         UIManager:nextTick(function() WebDAV.confirm_jump(self, remote) end)
                     elseif legacy_err ~= "missing" then
-                        show("InkBridge: 无法读取旧版远端记录：" .. tostring(legacy_err))
+                        show("墨桥：读取旧版远端记录失败 —— " .. WebDAV.describe_error(legacy_err))
                     else
-                        show("InkBridge: 没有找到这本书的历史记录。")
+                        show("墨桥：没有找到这本书的历史记录。")
                     end
                 end)
                 return
             end
+
             WebDAV.choose_history(self, entries, function(item)
-                WebDAV.download(self, item.url, function(ok, remote, remote_err)
-            if not ok then
-                show("InkBridge: 下载失败：" .. tostring(remote_err))
-                return
-            end
-            if not remote then
-                show("InkBridge: 未找到这本书的远端阅读记录。")
-                return
-            end
-            if remote.book_id ~= entry.book_id then
-                show("InkBridge: 远端记录不属于当前书籍，已停止。")
-                return
-            end
-            if not InkBridge:_position_differs(entry, remote) then
-                show("InkBridge: 远端记录与当前位置相同。")
-                return
-            end
-            UIManager:nextTick(function() WebDAV.confirm_jump(self, remote) end)
+                WebDAV.download(self, item.url, function(download_ok, remote, remote_err)
+                    if not download_ok then
+                        show("墨桥：下载失败 —— " .. WebDAV.describe_error(remote_err))
+                        return
+                    end
+                    if not remote then
+                        show("墨桥：没有找到这本书的远端阅读记录。")
+                        return
+                    end
+                    if remote.book_id ~= entry.book_id then
+                        show("墨桥：远端记录不属于当前书籍，已停止。")
+                        return
+                    end
+                    if not InkBridge:_position_differs(entry, remote) then
+                        show("墨桥：远端记录与当前位置相同。")
+                        return
+                    end
+                    UIManager:nextTick(function() WebDAV.confirm_jump(self, remote) end)
                 end)
             end)
         end)
@@ -199,7 +203,7 @@ function InkBridge:_sync(entry, mode)
     local history_path = self:_staging_dir() .. "/" .. history_name
     -- 上传历史文件本身，避免每次上传覆盖同一个云端对象。
     local ok, err = State.write_file(history_path, entry)
-    if not ok then show("InkBridge staging failed: " .. tostring(err)); return end
+    if not ok then show("墨桥：写入暂存文件失败 —— " .. tostring(err)); return end
 
     -- 历史记录是追加式文件，直接上传当前文件名即可。
     -- 只有 Cloud Storage 收到 provider 的 2xx 回调后才显示成功。
@@ -209,9 +213,9 @@ function InkBridge:_sync(entry, mode)
         -- 才真正读完该文件；且回调只会触发一次（WebDAV.upload 内部有去重）。
         os.remove(history_path)
         if upload_ok then
-            show("InkBridge: 阅读进度上传成功。")
+            show("墨桥：阅读进度上传成功。")
         else
-            show("InkBridge: 阅读进度上传失败：" .. tostring(upload_err))
+            show("墨桥：阅读进度上传失败 —— " .. WebDAV.describe_error(upload_err))
         end
     end)
 end
@@ -240,7 +244,7 @@ function InkBridge:_with_network(action)
         if NetworkMgr:isConnected() then
             action()
         else
-            show("InkBridge: 未连接网络，操作已取消。")
+            show("墨桥：未连接网络，操作已取消。")
         end
     end)
 end
@@ -248,7 +252,7 @@ end
 -- 菜单动作：读取当前页并发起同步。
 function InkBridge:upload_current()
     local entry, err = self:_book_context()
-    if not entry then show("InkBridge: " .. tostring(err)); return end
+    if not entry then show("墨桥：" .. WebDAV.describe_error(err)); return end
     self:_with_network(function() self:_sync(entry, "upload") end)
 end
 
@@ -256,7 +260,7 @@ end
 -- 如果远端记录更新，会在同步回调后显示跳转确认框。
 function InkBridge:download_current()
     local entry, err = self:_book_context()
-    if not entry then show("InkBridge: " .. tostring(err)); return end
+    if not entry then show("墨桥：" .. WebDAV.describe_error(err)); return end
     self:_with_network(function() self:_sync(entry, "download") end)
 end
 

@@ -25,9 +25,9 @@ KOReader 插件 InkBridge(墨桥)的开发文档。功能:通过 KOReader 自带
 
 | 测试文件 | 覆盖内容 |
 |---|---|
-| `tests/webdav_spec.lua`（77 条） | 远端路径校验、只读下载（含 404、非法路径、临时文件清理）、历史记录筛选与排序、上传的两条路径与 `provider.base` 副本/恢复、**跳转方式分级 `_plan_jump`** |
-| `tests/main_spec.lua`（33 条） | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、设备号处理、位置比较、上传后清理暂存文件、未联网时的提示流程 |
-| `tests/state_spec.lua`（64 条） | 文本锚点规范化（UTF-8 按字符计数）、阅读位置采集（含新增锚点）、记录校验与向后兼容、**紧凑载荷的结构与体积** |
+| `tests/webdav_spec.lua`（96 条） | 远端路径校验、只读下载（含 404、非法路径、临时文件清理）、历史记录筛选与排序、上传的两条路径与 `provider.base` 副本/恢复、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
+| `tests/main_spec.lua`（37 条） | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII** |
+| `tests/state_spec.lua`（81 条） | 文本锚点规范化（UTF-8 按字符计数、**xpointer 字符偏移**）、阅读位置采集、记录校验与向后兼容、紧凑载荷的结构与体积 |
 
 在仓库根目录执行(需要 LuaJIT —— 与 KOReader 运行时同款,LuaJIT 官网或包管理器都能装):
 
@@ -130,22 +130,38 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
 11. **文件名截断按字节的 bug。** `safe_filename_component` 原来用 `value:sub(1, n)` 截断,
     对中文是按字节切 —— 会把一个汉字劈成半个,生成非法 UTF-8 文件名。
     → 改用 `State._utf8_sub` 按字符截断。
+12. **用户可见文案统一为中文,内部错误码不再外泄(0.2.18)。** 原先
+    `inkbridge_webdav.lua` 的 toast 全是英文、`main.lua` 是「中文外壳包英文内核」
+    (`InkBridge: 下载失败：remote_record_invalid_json`)。
+    → 新增 `WebDAV.describe_error()`:回调里仍返回稳定的英文错误码(测试依赖它们),
+      只在显示时翻译;HTTP 状态码单独摘出来并附常见原因(401 认证、403 权限、404 不存在、
+      409 路径冲突、507 空间不足…)。未知错误**原样返回**,不吞排查线索。
+    → 删除空壳 `inkbridge_i18n.lua`(只有 `_meta.lua` 在用,`translate` 就是原样返回)。
+      以后真要国际化,正统做法是 `require("gettext")` + 英文源串,可直接复用
+      KOReader 自带的几十种语言翻译;现在文案是中文硬编码。
+13. **一批小清理(0.2.18)。**
+    - `_download_staging_path()` 不再用远端(中文)文件名当本地临时名,改为固定的
+      ASCII 名 `download.tmp` —— 避免 Windows 上 ANSI 代码页打不开中文路径;
+    - 删除死代码 `_staged_path()`;
+    - 删除 `pick_server()` 里不可达的 `apps/cloudstorage/syncservice` 兜底
+      (现行 KOReader 的云存储已迁到 `plugins/cloudstorage.koplugin`),改为给出
+      可执行的提示;
+    - `findAllText` 全文搜索前后用 `Device:setIgnoreInput()` 吞掉输入(照
+      readersearch.lua 的做法),异常路径也保证恢复;
+    - `_sync` 下载分支的内层回调把外层的 `ok` 遮蔽了,改名为 `download_ok` 并重排了缩进。
 
 ## 仍未处理
 
-1. `_download_staging_path()` 直接把远端文件名当本地临时名。设备端(Linux/UTF-8)没问题,
-   但 Windows 版 KOReader 的文件 API 走 ANSI,含中文的本地路径可能写不出来。
-   可改为用短哈希等纯 ASCII 名。
-2. UI 文案中英混杂(`main.lua` 有英文提示、`inkbridge_webdav.lua` 的 toast 全英文),
-   `inkbridge_i18n` 目前只有 `_meta.lua` 在用。错误信息里 `remote_record_invalid_json`
-   这类内部串会直接显示给用户。
-3. `_staged_path()`(`main.lua`)是死代码,从未被调用。
-4. `pick_server()` 里 `require("apps/cloudstorage/syncservice")` 的兜底分支在现行 KOReader
-   上不可达(cloudstorage 已迁到 `plugins/cloudstorage.koplugin`,`onShowCloudStorageList`
-   就在其 `main.lua`),可清理。
-5. 文本锚点取自 xpointer 所在**段落**的文本,所以锚点指向段落开头;若原位置在段落中间,
-   降级到文本锚点时误差为「小半个段落」。要彻底消除,需要把 xpointer 里的 `text().N`
-   偏移也带上(注意 N 是字符偏移,不能按字节截断)。
-6. `findAllText` 是全文档搜索,超大书籍上可能在 UI 线程卡顿一两秒
-   (KOReader 自己的搜索会用 `Device:setIgnoreInput(true)` 挡住输入,本插件暂未加)。
-7. **两条链路都改过之后,仍需实机确认一次完整流程**(上传 → 另一台设备下载 → 跳转)。
+1. **一个未闭环的疑问**:最初的实机现象是「在 8922 页的设备上于第 2222 页上传,在 8689 页的
+   设备上落到第 2164 页」,而 2164 恰好等于 `floor(percent × 总页数) + 1`,说明当时走的是
+   百分比分支;但后来实测跳转确认框显示的是「xpointer 内容锚点(精确)」,即 xpointer 是可解析的。
+   两种可能:(a) 当时那条记录的 xpointer 在接收端确实解析失败(汉王 C7T 是第三方分支,
+   crengine 的 DocFragment 切分可能与官方版不同);(b) xpointer 一直可用,2164 本来就是
+   「那段文字在该设备上的页码」,只是页码数字不同。
+   **下次双设备同步时请顺手记录两台分别停在第几页**,即可判定,然后更新本节。
+2. 文本锚点的字符偏移是按 crengine 的字符口径解析的(与 `_utf8_*` 一致)。若某个 KOReader
+   分支的 `text().N` 用的是别的口径,锚点会退化为「段落开头」水平 —— 需要真机走一次降级
+   路径才能确认(目前只在单元测试里覆盖)。
+3. 云端历史文件只增不减,没有自动清理;若要回收空间需手动删。
+4. 真机矩阵仍不完整:目前在 Android 与 Kindle 上验证过完整流程,汉王 C7T 只作为上传端
+   参与过,尚未做「同一台设备之间」与更多 KOReader 版本的交叉验证。

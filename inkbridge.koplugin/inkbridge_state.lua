@@ -66,8 +66,8 @@ end
 -- 太短的片段（如整页只有两三个字）无法唯一定位，直接放弃。
 --
 -- 长度必须按“字符”而不是字节来算：UTF-8 下一个汉字占 3 字节，
--- 若按字节限制，6 字节只等于 2 个汉字、32 字节只等于 10 个汉字，
--- 锚点会短到满书误命中。LuaJIT 不带 utf8 库，这里手写首字节计数。
+-- 若按字节限制，6 字节只等于 2 个汉字，锚点会短到满书误命中。
+-- LuaJIT 不带 utf8 库，这里手写首字节计数。
 local MIN_ANCHOR_LEN = 6    -- 字符数
 local MAX_ANCHOR_LEN = 20   -- 字符数（锚点只用全文搜索定位，20 字已足够唯一；
                             -- 多个命中还会用 pos_percent 消歧，不必更长）
@@ -97,9 +97,61 @@ function State._utf8_sub(s, n)
     return s
 end
 
-function State._make_anchor(text)
+-- 从第 start 个字符（1 基）起最多取 count 个字符。
+-- _utf8_sub 只能从头部截，取“段落中间的一段”需要这个。
+function State._utf8_sub_range(s, start, count)
+    if type(s) ~= "string" then return "" end
+    start = tonumber(start) or 1
+    count = tonumber(count) or 0
+    if start < 1 or count <= 0 then return "" end
+    local index, char_index = 1, 0
+    local first, last
+    while index <= #s do
+        local byte = s:byte(index)
+        local size = 1
+        if byte >= 240 then size = 4
+        elseif byte >= 224 then size = 3
+        elseif byte >= 192 then size = 2 end
+        char_index = char_index + 1
+        if char_index == start then first = index end
+        if first and char_index == start + count - 1 then
+            last = index + size - 1
+            break
+        end
+        index = index + size
+    end
+    if not first then return "" end
+    return s:sub(first, last or #s)
+end
+
+-- 从 xpointer 结尾的 /text().N 取出字符偏移 N。
+-- N 是 crengine 的**字符**偏移（不是字节），与上面几个按字符计算的函数同一口径。
+-- xpointer 指向元素而非文本节点时取不到，返回 0。
+function State._xpointer_text_offset(xp)
+    if type(xp) ~= "string" then return 0 end
+    return tonumber(xp:match("/text%(%)%.(%d+)$")) or 0
+end
+
+local function compact_text(s)
+    return (s:gsub("%s+", ""):gsub("\227\128\128", ""))
+end
+
+-- 生成文本锚点。offset 是 xpointer 里的字符偏移（可选）：
+--   * 有偏移   -> 从该偏移处开始取 MAX_ANCHOR_LEN 个字符，锚点落在实际阅读位置；
+--   * 段落将尽 -> 取不够长度就回退到段落开头（仍比没有锚点好）。
+--
+-- 重要：偏移必须先在**原始文本**上应用，再压缩空白 —— 反过来会改变字符序号，偏移就错位。
+--
+-- 为什么要带偏移：getTextFromXPointer 返回的是整个**段落**的文本
+-- （cre.cpp 里是 node->getText8()）。只取段落开头的话，降级到文本锚点时会落到段落起点，
+-- 误差为“小半个段落”；带上偏移后误差降到几个字。
+function State._make_anchor(text, offset)
     if type(text) ~= "string" then return nil end
-    local compact = text:gsub("%s+", ""):gsub("\227\128\128", "")
+    local start = (tonumber(offset) or 0) + 1
+    local compact = compact_text(State._utf8_sub_range(text, start, MAX_ANCHOR_LEN * 4))
+    if State._utf8_len(compact) < MIN_ANCHOR_LEN then
+        compact = compact_text(text)
+    end
     if State._utf8_len(compact) < MIN_ANCHOR_LEN then return nil end
     return State._utf8_sub(compact, MAX_ANCHOR_LEN)
 end
@@ -151,9 +203,12 @@ function State.read_position(ui)
         end
     end
     if xpath and type(doc.getTextFromXPointer) == "function" then
-        -- 该接口返回 xpointer 所在节点（通常是整个段落）的文本
+        -- 该接口返回 xpointer 所在节点（通常是整个段落）的文本，
+        -- 所以要配合 xpointer 里的字符偏移，取到实际阅读位置那一段。
         local ok, text = pcall(doc.getTextFromXPointer, doc, xpath)
-        if ok then text_anchor = State._make_anchor(text) end
+        if ok then
+            text_anchor = State._make_anchor(text, State._xpointer_text_offset(xpath))
+        end
     end
 
     local book_name = doc.file:match("([^/\\]+)$") or doc.file

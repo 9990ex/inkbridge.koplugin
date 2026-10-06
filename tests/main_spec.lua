@@ -284,6 +284,29 @@ do
     eq("未联网也不该先弹 WiFi（书本检查优先）", wifi_prompt, nil)
 end
 
+-- ============================================================================
+print("== 6. 下载临时文件路径 ==")
+-- ============================================================================
+-- ① 临时名必须是纯 ASCII：LuaJIT 在 Windows 上通过 ANSI 代码页打开文件，
+-- 含中文的本地路径会直接报 “Illegal byte sequence”。
+-- 设备端是 UTF-8 本来没事，但没有理由让一个临时文件名成为平台陷阱。
+do
+    local plugin = new_plugin()
+    local path = plugin:_download_staging_path()
+
+    local non_ascii = 0
+    for i = 1, #path do
+        if path:byte(i) > 127 then non_ascii = non_ascii + 1 end
+    end
+    eq("路径里没有非 ASCII 字节", non_ascii, 0)
+    contains("位于插件自己的 staging 目录下", path, SETTINGS_DIR)
+    check("以 .tmp 结尾", path:sub(-4) == ".tmp")
+
+    -- 旧签名接受远端文件名；即使有人按老方式带参调用，也必须仍然是 ASCII
+    local path2 = plugin:_download_staging_path("死人经-1006-130615-c7t.d31f852b.InkBridge.txt")
+    eq("带参调用也不含非 ASCII", path2, path)
+end
+
 -- 收尾：清掉测试用的设置目录
 os.execute('rmdir /s /q "' .. SETTINGS_DIR .. '" 2>nul')
 

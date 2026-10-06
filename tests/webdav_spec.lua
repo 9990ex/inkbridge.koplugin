@@ -464,6 +464,86 @@ do
     eq("原因说明", reason, "no_position")
 end
 
+-- ============================================================================
+print("== 6. describe_error（内部错误码 → 用户看得懂的中文）==")
+-- ============================================================================
+-- 回调里返回的仍是稳定的英文错误码（上面几节都依赖它们），
+-- 只在显示给用户时才翻译。这一层保证不会再出现
+-- “下载失败：remote_record_invalid_json” 这种把内部串甩到用户脸上的情况。
+do
+    eq("已知错误码", WebDAV.describe_error("invalid remote path"),
+        "云端返回的文件名不合法，已拒绝")
+    eq("未配置目标", WebDAV.describe_error("WebDAV destination is not configured"),
+        "还没有设置 WebDAV 目标（菜单 → 设置 WebDAV 目标）")
+    eq("嵌套错误码会被拆开翻译", WebDAV.describe_error("remote_record_invalid_json"),
+        "远端记录无法解析：记录不是合法的 JSON")
+    eq("跳转规划的原因也翻译", WebDAV.describe_error("no_document"), "当前没有打开的文档")
+    check("HTTP 403 指明下载失败",
+        WebDAV.describe_error("WebDAV download failed: HTTP 403"):find("下载失败", 1, true) ~= nil)
+    check("HTTP 403 附带权限提示",
+        WebDAV.describe_error("WebDAV download failed: HTTP 403"):find("权限", 1, true) ~= nil)
+    check("HTTP 401 提示认证问题",
+        WebDAV.describe_error("WebDAV upload failed: HTTP 401"):find("认证失败", 1, true) ~= nil)
+    check("HTTP 码保留在文案里",
+        WebDAV.describe_error("WebDAV upload failed: HTTP 507"):find("507", 1, true) ~= nil)
+    eq("未知错误原样返回（不吞信息）", WebDAV.describe_error("something weird"), "something weird")
+    eq("nil 安全", WebDAV.describe_error(nil), "未知错误")
+end
+
+-- ============================================================================
+print("== 7. 全文搜索期间的输入防护 ==")
+-- ============================================================================
+-- 搜索跑在 UI 线程上，大书要一两秒；不吞输入的话用户连点会造成动作重复。
+-- 用一个可控的 device 桩验证真的调用了 setIgnoreInput。
+do
+    local toggles = {}
+    package.loaded["device"] = nil
+    package.preload["device"] = function()
+        return { setIgnoreInput = function(_, value) toggles[#toggles + 1] = value end }
+    end
+    local doc = plan_doc({
+        xpointer_ok = false,
+        hits = { { start = "hit-near", ["end"] = "e1" } },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.9, percent = 0.249,
+    })
+    eq("仍然完成规划", plan and plan.method, "text")
+    eq("搜索前后各调用一次", #toggles, 2)
+    eq("先吞输入", toggles[1], true)
+    eq("后恢复输入", toggles[2], false)
+end
+
+do
+    -- 搜索抛异常时也必须恢复，否则用户之后再也点不动界面
+    local toggles = {}
+    -- require 会缓存成功加载的模块：不清掉的话这里拿到的是上一个用例的桩，
+    -- 计数就会计到别的表上（这个坑实际踩过一次）。
+    package.loaded["device"] = nil
+    package.preload["device"] = function()
+        return { setIgnoreInput = function(_, value) toggles[#toggles + 1] = value end }
+    end
+    local doc = plan_doc({ xpointer_ok = false, hits = {} })
+    doc.findAllText = function() error("boom") end
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, percent = 0.249,
+    })
+    eq("搜索失败则降级", plan and plan.method, "percent")
+    eq("异常路径也恢复输入", #toggles, 2)
+    eq("恢复值为 false", toggles[2], false)
+end
+
+do
+    -- 没有 device 模块时（极简构建/测试环境）不能报错，应安静跳过防护
+    package.preload["device"] = nil
+    package.loaded["device"] = nil
+    local doc = plan_doc({ xpointer_ok = false, hits = { { start = "hit-near", ["end"] = "e" } } })
+    local ok, plan = pcall(WebDAV._plan_jump, { ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, percent = 0.249,
+    })
+    check("没有 device 模块也不报错", ok)
+    check("仍然完成规划", ok and plan ~= nil and plan.method == "text")
+end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end
