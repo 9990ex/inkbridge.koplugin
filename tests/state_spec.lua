@@ -10,11 +10,30 @@ local script_dir  = script_path:match("^(.*)[/\\][^/\\]*$") or "."
 local PLUGIN_DIR  = script_dir .. "/../inkbridge.koplugin"
 package.path = PLUGIN_DIR .. "/?.lua;" .. package.path
 
--- rapidjson 桩：只记录最后一次交给 decode 的文本，返回预置结果
+-- rapidjson 桩：
+--   decode 返回预置表（每个用例自行设置）
+--   encode 用一个"扁平对象"编码器，输出形状与 KOReader 的 rapidjson 一致
+--   （无空格、非 ASCII 原样输出不转义——真实记录文件里就是原样 UTF-8），
+--   这样才能对载荷的**结构与体积**做断言。
 local json_next
+local function json_encode_flat(t)
+    local parts = {}
+    for k, v in pairs(t) do
+        local value
+        if type(v) == "string" then
+            value = '"' .. v:gsub("\\", "\\\\"):gsub('"', '\\"') .. '"'
+        elseif type(v) == "number" then
+            value = string.format("%.14g", v)
+        else
+            value = tostring(v)
+        end
+        parts[#parts + 1] = '"' .. k .. '":' .. value
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
 package.preload["rapidjson"] = function()
     return {
-        encode = function() return "{}" end,
+        encode = json_encode_flat,
         decode = function() return json_next end,
     }
 end
@@ -62,8 +81,8 @@ do
     check("过短的片段返回 nil", State._make_anchor("短") == nil)
     check("两个汉字（6 字节）仍然太短", State._make_anchor("好。") == nil)
     check("刚好 6 个字符可用", State._make_anchor("一二三四五六") ~= nil)
-    -- 长度按字符算：32 个汉字必须完整保留（按字节截断只会剩 10 个）
-    eq("按字符截断到 32 字", State._utf8_len(State._make_anchor(string.rep("字", 100))), 32)
+    -- 长度按字符算：20 个汉字必须完整保留（按字节截断只会剩 6 个）
+    eq("按字符截断到 20 字", State._utf8_len(State._make_anchor(string.rep("字", 100))), 20)
     check("非字符串返回 nil", State._make_anchor(nil) == nil)
     check("数字返回 nil", State._make_anchor(123) == nil)
     check("空白串返回 nil", State._make_anchor("   \n  ") == nil)
@@ -94,7 +113,7 @@ do
     check("pos_percent 已计算", entry.pos_percent ~= nil)
     eq("pos_percent 等于 位置/文档高度", math.floor(entry.pos_percent * 1e6) / 1e6, 0.249047)
     check("text_anchor 已提取", entry.text_anchor ~= nil)
-    eq("text_anchor 为段落开头 32 字", entry.text_anchor, State._utf8_sub(PARA, 32))
+    eq("text_anchor 为段落开头 20 字", entry.text_anchor, State._utf8_sub(PARA, 20))
     eq("book_name 去掉 .epub 后缀", entry.book_name, "死人经 (冰临神下) (Z-Library)")
 end
 
@@ -171,6 +190,90 @@ do
     json_next = nil
     check("拒绝非法 JSON", State.decode("not json") == nil)
     check("拒绝空串", State.decode("") == nil)
+end
+
+-- ============================================================================
+print("== 4. 紧凑载荷（体积与向后兼容）==")
+-- ============================================================================
+-- 背景：实测一份真实记录 541 字节，而 Moon+ Reader 的 .po 只有 28 字节。
+-- Moon+ 能那么小是因为它文件名固定（载荷不必带书籍身份）、只存自己的字符偏移、
+-- 单文件覆盖写。墨桥做不到那么小（xpointer 本身就是 46 字节的内容锚点，
+-- 而且保留追加式历史），但完全可以砍掉上传方的本机信息与冗余精度。
+local REAL_ENTRY = {
+    schema_version = 1,
+    book_id = "d31f852ba4d127fb9fc230956ecd6b1d",
+    device_id = "1791209408-8147",
+    device_label = "c7t",
+    book_file = "/storage/emulated/0/Books/死人经 (冰临神下) (Z-Library).epub",
+    book_name = "死人经 (冰临神下) (Z-Library)",
+    page = 1000,
+    total_pages = 8922,
+    percent = 0.11208249271463798,
+    pos_percent = 0.11178582603430151,
+    xpointer = "/body/DocFragment[138]/body/div/p[41]/text().0",
+    text_anchor = "楼里终于清静了，铁寒锋肚子里的疑问比徒弟还多",
+    updated_at = 1791262716,
+}
+
+do
+    local payload = State.to_payload(REAL_ENTRY)
+    check("使用短字段名 sv/id/di/dl",
+        payload.sv == 1 and payload.id == REAL_ENTRY.book_id
+        and payload.di == REAL_ENTRY.device_id and payload.dl == "c7t")
+    eq("不写入 book_file（上传方本机绝对路径）", payload.book_file, nil)
+    eq("不写入 book_name（云端文件名已含书名）", payload.book_name, nil)
+    eq("内容比例保留 5 位小数", payload.pp, 0.11179)
+    eq("页序比例保留 5 位小数", payload.p, 0.11208)
+    eq("xpointer 原样保留", payload.xp, REAL_ENTRY.xpointer)
+    eq("时间戳保留", payload.t, 1791262716)
+end
+
+do
+    local text = State.encode(REAL_ENTRY)
+    -- 原实现约 540 字节；book_file + book_name 就占约 137 字节。
+    -- 留一点余量，一旦有人再往载荷里塞本机信息，这里会立刻红灯。
+    check("编码后不超过 300 字节", #text <= 300, #text)
+    check("载荷里没有本机路径", text:find("/storage/", 1, true) == nil)
+    check("载荷里没有书名", text:find("死人经", 1, true) == nil)
+    print(string.format("        （编码后实际 %d 字节，原实现约 541 字节）", #text))
+end
+
+do
+    local back = State.from_payload(State.to_payload(REAL_ENTRY))
+    eq("往返后 book_id 不变", back.book_id, REAL_ENTRY.book_id)
+    eq("往返后 xpointer 不变", back.xpointer, REAL_ENTRY.xpointer)
+    eq("往返后 text_anchor 不变", back.text_anchor, REAL_ENTRY.text_anchor)
+    eq("往返后 page 不变", back.page, 1000)
+    eq("往返后不引入 book_file", back.book_file, nil)
+end
+
+do
+    -- 云上已有的旧记录（长字段名）必须仍能解析，否则升级即失效
+    json_next = {
+        schema_version = 1,
+        book_id = "d31f852ba4d127fb9fc230956ecd6b1d",
+        book_name = "死人经 (冰临神下) (Z-Library)",
+        book_file = "/mnt/us/documents/死人经.epub",
+        percent = 0.23017,
+        xpointer = "/body/DocFragment[283]/body/div/p[24]/text().23",
+        page = 2000, total_pages = 8689,
+    }
+    local rec = State.decode("{}")
+    check("旧版长字段名仍可解析", rec ~= nil)
+    eq("旧记录 book_id", rec and rec.book_id, "d31f852ba4d127fb9fc230956ecd6b1d")
+    eq("旧记录 xpointer", rec and rec.xpointer, "/body/DocFragment[283]/body/div/p[24]/text().23")
+    check("旧记录的 book_name 原样保留",
+        rec and rec.book_name == "死人经 (冰临神下) (Z-Library)")
+end
+
+do
+    json_next = { sv = 1, id = "abc123", p = 0.5, pp = 0.49, pg = 100, t = 1 }
+    local rec = State.decode("{}")
+    check("新版短字段名可解析", rec ~= nil)
+    eq("sv -> schema_version", rec and rec.schema_version, 1)
+    eq("id -> book_id", rec and rec.book_id, "abc123")
+    eq("pp -> pos_percent", rec and rec.pos_percent, 0.49)
+    eq("pg -> page", rec and rec.page, 100)
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

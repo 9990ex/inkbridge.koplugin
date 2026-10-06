@@ -33,7 +33,7 @@ cd "D:/path/to/repo"
 |---|---|
 | `tests/webdav_spec.lua`（77 条） | 远端路径校验、只读下载（含 404、非法路径、临时文件清理）、历史记录筛选与排序、上传的两条路径与 `provider.base` 副本/恢复、**跳转方式分级 `_plan_jump`** |
 | `tests/main_spec.lua`（27 条） | 云端文件名生成与非法字符处理、设备号回退、位置比较、上传后清理暂存文件、未联网时的提示流程 |
-| `tests/state_spec.lua`（40 条） | 文本锚点规范化（UTF-8 按字符计数）、阅读位置采集（含新增锚点）、记录校验与向后兼容 |
+| `tests/state_spec.lua`（64 条） | 文本锚点规范化（UTF-8 按字符计数）、阅读位置采集（含新增锚点）、记录校验与向后兼容、**紧凑载荷的结构与体积** |
 
 跑法（需要 LuaJIT，与 KOReader 运行时同款）：
 
@@ -107,6 +107,20 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
    → 另注:无效 xpointer **不能**直接交给 crengine,`gotoXPointer` 在 `createXPointer` 失败时
      `SetPos(0)` 会跳到书首;而 `getPageFromXPointer` 失败时静默返回 1,也不能当判据。
      所以有效性预检必须保留(`isXPointerInDocument` = `!createXPointer().isNull()`)。
+
+8. **记录体积过大(0.2.16)。** 实测一份记录 541 字节,而 Moon+ Reader 的 `.po` 只有 28 字节。
+   拆账后发现一大半是可省的:
+   - `book_file`(上传方本机绝对路径,如 `/storage/emulated/0/Books/…`)约 85 字节 ——
+     接收方只用 `book_id` 认书,这个字段**任何地方都没有被读取**;
+   - `book_name` 约 52 字节 —— 云端文件名本身就带书名,载荷里再存一遍是重复;
+   - 百分比 17 位有效数字,保留 5 位即可;
+   - 长字段名换两字母短名。
+   → 新增紧凑载荷层(`State.to_payload` / `State.from_payload`),`encode` 写短名,
+     `decode` **同时接受新旧两种字段名**(云上已有的旧记录仍可下载)。
+     实测 541 → **270 字节**。测试里加了体积上限断言(≤300 字节)防止回涨。
+   → 注:Moon+ 能到 28 字节是因为文件名固定、载荷无需带书籍身份、只存自己的字符偏移;
+     墨桥的 xpointer 本身就 46 字节,且保留追加式历史,不可能压到那个量级。
+9. 文本锚点长度 32 → 20 字(多个命中还会用 `pos_percent` 消歧,20 字已足够唯一)。
 
 ## 仍未处理
 

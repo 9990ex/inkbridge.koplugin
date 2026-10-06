@@ -1,23 +1,31 @@
 -- inkbridge_state.lua 只处理“阅读位置数据”，不负责界面和网络。
 --
--- 一个同步记录大致是：
+-- 内存里的 entry（生成云端文件名时要用的字段都在这里）：
 -- {
 --   schema_version = 1,       -- 数据格式版本
 --   book_id = "...",          -- 同一本书的内容哈希
 --   device_id = "...",        -- 产生记录的设备
---   percent = 0.47,            -- 0 到 1 的完成比例
---   page = 581,                -- 当时的页码（可选）
---   xpointer = "...",         -- EPUB 精确位置（可选）
---   pos_percent = 0.51,       -- 内容在文档总高度中的位置比例（可选，跨排版稳定）
---   text_anchor = "...",      -- 该位置正文的一小段（可选，可用文本搜索找回）
---   updated_at = 1234567890   -- Unix 时间戳
+--   book_file = "...",        -- 本机绝对路径（仅本机使用，不写进载荷）
+--   book_name = "...",        -- 书名（云端文件名已含，不写进载荷）
+--   percent = 0.47,           -- 页序比例（KOReader 状态栏的值）
+--   page = 581,               -- 当时的页码
+--   total_pages = 8922,
+--   xpointer = "...",         -- 精确内容锚点
+--   pos_percent = 0.51,       -- 内容在文档总高度中的位置比例（跨排版稳定）
+--   text_anchor = "...",      -- 该位置正文的一小段（可用全文搜索找回）
+--   updated_at = 1234567890
 -- }
 --
--- 关于后两个字段：percent 来自 ReaderFooter:getBookProgress()，本质是
--- pageno/pages —— 即“页序占本机总页数的比例”，依赖设备排版（两台设备可能是
--- 8922 页 vs 8689 页）。所以它只能当最后的兜底。pos_percent 和 text_anchor
--- 与排版无关，用于 xpointer 在本机解析失败时仍能较精确地还原位置。
--- 三个新字段都是可选的，旧记录缺少它们时自动降级，不会报错。
+-- 落盘/上云的**紧凑载荷**（短字段名，约 260 字节）：
+-- {"sv":1,"id":"d31f852b…","di":"1791209408-8147","dl":"c7t","pg":1000,"tp":8922,
+--  "p":0.11208,"pp":0.11179,"xp":"/body/DocFragment[138]/body/div/p[41]/text().0",
+--  "ta":"楼里终于清静了，铁寒锋肚子里…","t":1791262716}
+--
+-- 关于 percent：它来自 ReaderFooter:getBookProgress()，本质是 pageno/pages，
+-- 即「页序占本机总页数的比例」，依赖设备排版（两台设备可能是 8922 页 vs 8689 页），
+-- 只能当最后的兜底。pos_percent 与 text_anchor 与排版无关，用于 xpointer
+-- 在本机解析失败时仍能较精确地还原位置。三个字段都是可选的：
+-- 旧记录缺少它们时自动降级，不会报错。schema_version 保持为 1。
 
 local rapidjson = require("rapidjson")
 local util = require("util")
@@ -61,7 +69,8 @@ end
 -- 若按字节限制，6 字节只等于 2 个汉字、32 字节只等于 10 个汉字，
 -- 锚点会短到满书误命中。LuaJIT 不带 utf8 库，这里手写首字节计数。
 local MIN_ANCHOR_LEN = 6    -- 字符数
-local MAX_ANCHOR_LEN = 32   -- 字符数
+local MAX_ANCHOR_LEN = 20   -- 字符数（锚点只用全文搜索定位，20 字已足够唯一；
+                            -- 多个命中还会用 pos_percent 消歧，不必更长）
 
 function State._utf8_len(s)
     if type(s) ~= "string" then return 0 end
@@ -164,9 +173,74 @@ function State.read_position(ui)
     }
 end
 
--- 把 Lua table 编码为 JSON 文本，准备写入本地或上传到 WebDAV。
+-- ── 落盘/上云用的紧凑载荷 ────────────────────────────────────────────────
+--
+-- 为什么要做这一层：记录会一直躺在云上、并被反复下载，体积越小越好。
+-- 原来的记录约 540 字节，其中一大半是可省的：
+--   * book_file —— 上传方的**本机绝对路径**（如 /storage/emulated/0/Books/…）。
+--                  接收方只靠 book_id 识别书籍，从不读它。约 85 字节纯浪费。
+--   * book_name —— 云端文件名本身就带书名（<书名>-<时间>-<设备>.<短哈希>…），
+--                  载荷里再存一遍是重复。约 52 字节。
+--   * 17 位有效数字的百分比 —— 内容比例保留 5 位小数，在八千页的书里远小于一页。
+--   * 长字段名 —— 换成两字母短名。
+-- 这些字段仍然保留在**内存**里的 entry 上（生成文件名要用 book_name），
+-- 只是不写进载荷。
+local PAYLOAD_KEYS = {
+    schema_version = "sv",
+    book_id        = "id",
+    device_id      = "di",
+    device_label   = "dl",
+    page           = "pg",
+    total_pages    = "tp",
+    percent        = "p",
+    pos_percent    = "pp",
+    xpointer       = "xp",
+    text_anchor    = "ta",
+    updated_at     = "t",
+}
+
+local function round5(value)
+    local n = tonumber(value)
+    if not n then return nil end
+    return math.floor(n * 100000 + 0.5) / 100000
+end
+
+function State.to_payload(entry)
+    if type(entry) ~= "table" then return {} end
+    local payload = {}
+    for full, short in pairs(PAYLOAD_KEYS) do
+        local value = entry[full]
+        if value ~= nil then
+            if full == "percent" or full == "pos_percent" then
+                value = round5(value)
+            end
+            payload[short] = value
+        end
+    end
+    return payload
+end
+
+-- 把载荷还原成内部字段名。**同时接受旧版长字段名**，
+-- 这样云上已有的历史记录（0.2.15 及更早写的）仍能正常下载使用。
+function State.from_payload(obj)
+    if type(obj) ~= "table" then return nil end
+    local entry = {}
+    for full, short in pairs(PAYLOAD_KEYS) do
+        if obj[short] ~= nil then
+            entry[full] = obj[short]
+        elseif obj[full] ~= nil then
+            entry[full] = obj[full]
+        end
+    end
+    -- 旧记录里可能带着这两个字段，原样透传给调用方
+    if obj.book_file ~= nil then entry.book_file = obj.book_file end
+    if obj.book_name ~= nil then entry.book_name = obj.book_name end
+    return entry
+end
+
+-- 把 Lua table 编码为紧凑 JSON 文本，准备写入本地或上传到 WebDAV。
 function State.encode(entry)
-    return rapidjson.encode(entry)
+    return rapidjson.encode(State.to_payload(entry))
 end
 
 -- 从 JSON 文本恢复 Lua table，并检查最基本的数据格式。
@@ -175,12 +249,23 @@ function State.decode(text)
     if type(text) ~= "string" or text == "" then return nil, "empty" end
     local ok, value = pcall(rapidjson.decode, text)
     if not ok or type(value) ~= "table" then return nil, "invalid_json" end
-    if tonumber(value.schema_version) ~= State.SCHEMA_VERSION then return nil, "unsupported_schema" end
-    if type(value.book_id) ~= "string" or value.book_id == "" then return nil, "missing_book_id" end
-    if value.book_name ~= nil and type(value.book_name) ~= "string" then return nil, "invalid_book_name" end
-    if type(value.percent) ~= "number" or value.percent < 0 or value.percent > 1 then return nil, "invalid_percent" end
-    if value.xpointer ~= nil and type(value.xpointer) ~= "string" then return nil, "invalid_xpointer" end
-    return value
+    local entry = State.from_payload(value)
+    if tonumber(entry.schema_version) ~= State.SCHEMA_VERSION then
+        return nil, "unsupported_schema"
+    end
+    if type(entry.book_id) ~= "string" or entry.book_id == "" then
+        return nil, "missing_book_id"
+    end
+    if entry.book_name ~= nil and type(entry.book_name) ~= "string" then
+        return nil, "invalid_book_name"
+    end
+    if type(entry.percent) ~= "number" or entry.percent < 0 or entry.percent > 1 then
+        return nil, "invalid_percent"
+    end
+    if entry.xpointer ~= nil and type(entry.xpointer) ~= "string" then
+        return nil, "invalid_xpointer"
+    end
+    return entry
 end
 
 -- 读取一个本地 JSON 文件。
