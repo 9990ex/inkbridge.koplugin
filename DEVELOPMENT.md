@@ -1,33 +1,27 @@
-# 墨桥 InkBridge — 工作区说明
+# 墨桥 InkBridge — 开发说明
 
-KOReader 插件 InkBridge(墨桥)的开发工作区。功能:通过 KOReader 自带的 WebDAV 云存储,
+KOReader 插件 InkBridge(墨桥)的开发文档。功能:通过 KOReader 自带的 WebDAV 云存储,
 在不同设备之间手动同步当前阅读位置。
 
 ## 目录结构
+
+公开的仓库里只有两项:
 
 | 路径 | 说明 |
 |---|---|
 | `inkbridge.koplugin/` | **插件本体(唯一开发目录)**。改代码只改这里。 |
 | `tests/` | 回归测试。用桩替换 KOReader 的界面/网络模块,**不需要设备**即可运行。 |
-| `koreader-master/` | KOReader 上游源码快照,用于核对 API 契约。与 GitHub master 逐文件校验一致。 |
-| `reference/koreader-base/` | koreader-base 的 C/C++ 源码(`cre.cpp`、`xtext.cpp`)。xpointer 的真实语义在这里。 |
-| `reference/syncery-1.2.4.1.2/` | Syncery 插件源码。KOReader 云存储/WebDAV 接口的现成参考实现。 |
-| `releases/` | 历史版本 zip(v0.1.0 → v0.2.13),仅作档案,已被 git 忽略。 |
-| `InkBridge-Alpha.code-workspace` | VS Code 工作区配置。 |
 
-`reference/`、`koreader-master/`、`releases/` 都不属于工程本体,已在 `.gitignore` 中排除。
+本地开发时还有几份**不随仓库发布**的参考资料(已在 `.gitignore` 中排除):
+
+| 路径 | 说明 |
+|---|---|
+| `koreader-master/` | KOReader 上游源码快照,用于核对 API 契约 |
+| `reference/koreader-base/` | koreader-base 的 C/C++ 源码(`cre.cpp`、`xtext.cpp`),xpointer 的真实语义在这里 |
+| `reference/syncery-*/` | Syncery 插件源码,KOReader 云存储/WebDAV 接口的现成参考实现 |
+| `releases/` | 历史版本 zip,仅作档案 |
 
 ## 如何验证
-
-源码改动后**必须**跑这两份测试(需要 LuaJIT,与 KOReader 运行时同款):
-
-```powershell
-# Windows 上 LuaJIT 的默认安装位置:
-#   C:\Users\<用户名>\AppData\Local\Programs\LuaJIT\bin\luajit.exe
-cd "D:/path/to/repo"
-& "C:\Users\USER\AppData\Local\Programs\LuaJIT\bin\luajit.exe" tests\webdav_spec.lua   # 58 条
-& "C:\Users\USER\AppData\Local\Programs\LuaJIT\bin\luajit.exe" tests\main_spec.lua     # 27 条
-```
 
 | 测试文件 | 覆盖内容 |
 |---|---|
@@ -35,15 +29,16 @@ cd "D:/path/to/repo"
 | `tests/main_spec.lua`（33 条） | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、设备号处理、位置比较、上传后清理暂存文件、未联网时的提示流程 |
 | `tests/state_spec.lua`（64 条） | 文本锚点规范化（UTF-8 按字符计数）、阅读位置采集（含新增锚点）、记录校验与向后兼容、**紧凑载荷的结构与体积** |
 
-跑法（需要 LuaJIT，与 KOReader 运行时同款）：
+在仓库根目录执行(需要 LuaJIT —— 与 KOReader 运行时同款,LuaJIT 官网或包管理器都能装):
 
-```powershell
-cd "D:/path/to/repo"
-$lj = "C:\Users\USER\AppData\Local\Programs\LuaJIT\bin\luajit.exe"
-& $lj tests\webdav_spec.lua
-& $lj tests\main_spec.lua
-& $lj tests\state_spec.lua
+```bash
+luajit tests/webdav_spec.lua
+luajit tests/main_spec.lua
+luajit tests/state_spec.lua
 ```
+
+Windows 上可 `winget install DEVCOM.LuaJIT`,装完在
+`%LOCALAPPDATA%\Programs\LuaJIT\bin\luajit.exe`,用全路径调用即可。
 
 已知环境限制:Windows 上 LuaJIT 通过 ANSI 代码页打开文件,含中文的**本地**路径会报
 `Illegal byte sequence`,所以测试夹具刻意使用 ASCII 本地文件名(远端名仍含中文)。

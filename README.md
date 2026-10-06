@@ -29,9 +29,29 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 当前状态
 
-项目处于规划和架构设计阶段，尚未发布可用插件或正式版本。
+**已有可用的实验性 Alpha（`0.2.17-alpha`）**，可在 [Releases](../../releases) 下载安装包。
+上传、下载、跨设备跳转的完整流程已在 Android 与 Kindle 设备上实测通过。
 
-这里先把目标和边界公开出来，后续实现会以小步、可验证、可恢复为原则推进。
+这是 Alpha：功能可用但仍在快速迭代，不代表稳定版本。使用前请先读插件自己的说明
+[`inkbridge.koplugin/README.md`](inkbridge.koplugin/README.md)。
+
+### 安装
+
+1. 到 [Releases](../../releases) 下载最新的 `inkbridge.koplugin-v*-alpha.zip`；
+2. 解压得到 `inkbridge.koplugin/` 目录（**不要**只解压里面的文件）；
+3. 放进 KOReader 的 `plugins/` 目录：
+   - Kobo：`.adds/koreader/plugins/`
+   - Kindle：`koreader/plugins/`
+   - Android：`/sdcard/koreader/plugins/`
+4. 完整重启 KOReader，在工具菜单打开「墨桥 InkBridge」。
+
+首次使用需在菜单里点「设置 WebDAV 目标」，并**长按**「Long-press here to choose current folder」
+那一项来选定云端目录（KOReader 的标准交互）。
+
+### 参与开发
+
+见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（174 条断言，不需要设备）、
+进度记录的定位原理，以及已知问题清单。
 
 ## 设计原则
 
@@ -44,8 +64,16 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 说明
 
-InkBridge 是独立规划中的项目，与 Syncery 没有官方隶属关系。早期设计会参考现有开源项目的经验，但不会把未完成的实验代码当作本项目的正式实现。
+InkBridge 是独立项目，与 Syncery 没有官方隶属关系。早期设计会参考现有开源项目的经验，
+但不会把未完成的实验代码当作本项目的正式实现。
 
 ## 名称
 
 **InkBridge / 墨桥**：连接不同阅读设备，也连接不同阅读软件之间的阅读进度。
+
+## 许可证
+
+本项目以 [GNU General Public License v3.0](LICENSE) 授权。
+
+> 说明：InkBridge 是 KOReader 的插件，运行时会 `require` KOReader 自身的模块；
+> KOReader 本体以 AGPL-3.0 发布。
