@@ -333,37 +333,149 @@ function WebDAV.choose_history(plugin, entries, on_select)
     UIManager:show(plugin._history_dialog)
 end
 
--- 远端位置较新时，询问用户是否跳转。
--- 优先使用 xpointer；如果 xpointer 在本机文档中不存在，则按百分比
--- 换算为页码，避免把无效 xpointer 强行交给 KOReader。
+-- 规划一次跳转：按“可靠程度从高到低”挑选定位方式。
+--
+-- 为什么需要分级：页码只在本机排版下有意义（两台设备可能是 8922 页 vs 8689 页），
+-- 而记录里的 percent 来自 ReaderFooter:getBookProgress()，本质是 pageno/pages，
+-- 同样是“页序比例”，一样依赖排版。可用的锚点按可靠性排序：
+--
+--   1) xpointer 能在本机解析    -> 内容锚点，最精确
+--   2) text_anchor + 全文搜索   -> 与 DOM 索引、spine 切分方式都无关，
+--                                  能扛住 xpointer 失效（跨设备最常见的情况）
+--   3) percent 页数换算          -> 最后的兜底（最不精确）
+--   固定版式（PDF/CBZ）的页码由内容决定、与设备无关，直接用记录里的页码。
+--
+-- 重要：**无效 xpointer 绝不能直接交给 crengine**。gotoXPointer 的实现是
+--   createXPointer(...) -> goToBookmark(xp) -> SetPos(xp.toPoint().y)
+-- 解析失败时 xp 为 null、y 为 0，结果会直接跳到书首。所以第 1 步必须先做
+-- isXPointerInDocument 校验（它等价于 !createXPointer().isNull()）。
+-- 也不能拿 getPageFromXPointer 当判据：它在解析失败时静默返回 1。
+--
+-- 返回 plan 表，或 nil + 原因：
+--   { method = "xpointer", xpointer = ... }
+--   { method = "text",     xpointer = ..., hits = n }
+--   { method = "page",     page = n }        固定版式
+--   { method = "percent",  page = n }        兜底
+function WebDAV._plan_jump(plugin, remote)
+    local ui = plugin and plugin.ui
+    if not ui or not ui.document then return nil, "no_document" end
+    if type(remote) ~= "table" then return nil, "no_record" end
+    local doc = ui.document
+
+    if doc.info and doc.info.has_pages then
+        -- 固定版式：页码与设备无关
+        local page = tonumber(remote.page)
+        if page and page > 0 then return { method = "page", page = page } end
+    elseif ui.rolling then
+        -- 1) xpointer（先校验可解析性）
+        local xp = remote.xpointer
+        if type(xp) == "string" and xp ~= ""
+                and type(doc.isXPointerInDocument) == "function" then
+            local ok, found = pcall(doc.isXPointerInDocument, doc, xp)
+            if ok and found then
+                return { method = "xpointer", xpointer = xp }
+            end
+        end
+
+        -- 2) 文本锚点：全文搜索，命中里挑最接近 pos_percent 的一个
+        --    （锚点可能重复，例如“他说。”这类短句，必须用内容比例消歧）
+        local anchor = remote.text_anchor
+        if type(anchor) == "string" and anchor ~= ""
+                and type(doc.findAllText) == "function" then
+            local ok, hits = pcall(doc.findAllText, doc, anchor, true, 0, 8, false)
+            if ok and type(hits) == "table" and #hits > 0 then
+                local height = doc.info and tonumber(doc.info.doc_height) or nil
+                local ratio = tonumber(remote.pos_percent)
+                local expected
+                if ratio and height and height > 0
+                        and type(doc.getPosFromXPointer) == "function" then
+                    expected = math.max(0, math.min(1, ratio)) * height
+                end
+                local pick, pick_dist
+                for i = 1, #hits do
+                    local hit = hits[i]
+                    if type(hit) == "table" and type(hit.start) == "string" then
+                        if not expected then pick = hit; break end
+                        local ok_pos, pos = pcall(doc.getPosFromXPointer, doc, hit.start)
+                        if ok_pos and tonumber(pos) then
+                            local dist = math.abs(tonumber(pos) - expected)
+                            if not pick_dist or dist < pick_dist then
+                                pick, pick_dist = hit, dist
+                            end
+                        elseif not pick then
+                            pick = hit
+                        end
+                    end
+                end
+                -- findAllText 会顺带把命中高亮出来，用完清掉
+                if type(doc.clearSelection) == "function" then
+                    pcall(doc.clearSelection, doc)
+                end
+                if pick then
+                    return { method = "text", xpointer = pick.start, hits = #hits }
+                end
+            end
+        end
+    end
+
+    -- 3) 页数比例兜底
+    local percent = tonumber(remote.percent)
+    if not percent then return nil, "no_position" end
+    if type(doc.getPageCount) == "function" then
+        local ok, total = pcall(doc.getPageCount, doc)
+        total = ok and tonumber(total) or nil
+        if total and total > 0 then
+            return { method = "percent", page = math.max(1, math.floor(percent * total) + 1) }
+        end
+    end
+    return nil, "no_page_count"
+end
+
+-- 远端位置较新时，询问用户是否跳转，并说明本机将用哪种方式定位
+-- （把定位方式显示出来，是为了让“跳得准不准”这件事可诊断）。
 function WebDAV.confirm_jump(plugin, remote)
     local ui = plugin.ui
     if not ui or not ui.document then return end
-    local text = string.format("Remote InkBridge position: %.1f%%\nJump there?", remote.percent * 100)
+
+    local plan, reason = WebDAV._plan_jump(plugin, remote)
+    if not plan then
+        show("InkBridge: 无法在本机文档上还原远端位置（" .. tostring(reason) .. "）。")
+        return
+    end
+
+    local method_label = {
+        xpointer = "xpointer 内容锚点（精确）",
+        text     = "文本锚点搜索（精确）",
+        page     = "页码（固定版式）",
+        percent  = "页数比例换算（近似）",
+    }
+    local lines = {
+        string.format("远端阅读位置：%.2f%%", (tonumber(remote.percent) or 0) * 100),
+    }
+    if remote.page and remote.total_pages then
+        table.insert(lines, string.format("远端设备：第 %s / %s 页",
+            tostring(remote.page), tostring(remote.total_pages)))
+    end
+    table.insert(lines, "本机定位方式：" .. (method_label[plan.method] or tostring(plan.method)))
+    if plan.method == "text" and plan.hits then
+        table.insert(lines, string.format("（文本锚点全文命中 %d 处，取最接近的）", plan.hits))
+    end
+    if plan.method == "percent" and type(remote.xpointer) == "string" and remote.xpointer ~= "" then
+        table.insert(lines, "（远端 xpointer 在本机无法解析，已降级）")
+    end
+    table.insert(lines, "跳转过去吗？")
+
     UIManager:show(ConfirmBox:new{
-        text = text,
-        ok_text = "Jump",
-        cancel_text = "Stay",
+        text = table.concat(lines, "\n"),
+        ok_text = "跳转",
+        cancel_text = "留在原处",
         ok_callback = function()
-            -- xpointer 只适用于滚动模式。分页模式由 ReaderPaging 负责，
-            -- 它不处理 GotoXPointer；此时必须使用百分比换算页码。
-            if ui.rolling and remote.xpointer and ui.document.isXPointerInDocument
-                    and ui.document:isXPointerInDocument(remote.xpointer) then
-                -- 阅读器模块通过 ReaderUI:handleEvent 接收跳转事件。
-                -- 直接发给当前 ui 比广播给所有窗口更可靠，尤其是在
-                -- 确认框关闭后的 nextTick 回调中。
-                ui:handleEvent(Event:new("GotoXPointer", remote.xpointer, remote.xpointer))
-            elseif type(ui.document.getPageCount) == "function" then
-                local ok, total = pcall(ui.document.getPageCount, ui.document)
-                total = ok and tonumber(total) or nil
-                if total and total > 0 then
-                    local page = math.max(1, math.floor(remote.percent * total) + 1)
-                    ui:handleEvent(Event:new("GotoPage", page))
-                else
-                    show("Remote position cannot be applied on this document.")
-                end
-            else
-                show("Remote position cannot be applied on this document.")
+            -- 阅读器模块通过 ReaderUI:handleEvent 接收跳转事件；直接发给当前 ui
+            -- 比广播给所有窗口更可靠，尤其是在确认框关闭后的回调里。
+            if plan.method == "xpointer" or plan.method == "text" then
+                ui:handleEvent(Event:new("GotoXPointer", plan.xpointer, plan.xpointer))
+            elseif plan.method == "page" or plan.method == "percent" then
+                ui:handleEvent(Event:new("GotoPage", plan.page))
             end
         end,
     })

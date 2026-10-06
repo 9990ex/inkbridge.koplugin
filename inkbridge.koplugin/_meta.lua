@@ -5,5 +5,5 @@ local _ = require("inkbridge_i18n").translate
 return {
     fullname = _([[InkBridge / 墨桥]]),
     description = _([[A small, manual WebDAV reading-position sync for KOReader devices.]]),
-    version = "0.2.14-alpha",
+    version = "0.2.15-alpha",
 }
