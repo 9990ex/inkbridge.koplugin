@@ -31,8 +31,19 @@ cd "D:/path/to/repo"
 
 | 测试文件 | 覆盖内容 |
 |---|---|
-| `tests/webdav_spec.lua` | 远端路径校验、只读下载(含 404、非法路径、临时文件清理)、历史记录筛选与排序、上传的两条路径与 `provider.base` 副本/恢复 |
-| `tests/main_spec.lua` | 云端文件名生成与非法字符处理、设备号回退、位置比较、上传后清理暂存文件、未联网时的提示流程 |
+| `tests/webdav_spec.lua`（77 条） | 远端路径校验、只读下载（含 404、非法路径、临时文件清理）、历史记录筛选与排序、上传的两条路径与 `provider.base` 副本/恢复、**跳转方式分级 `_plan_jump`** |
+| `tests/main_spec.lua`（27 条） | 云端文件名生成与非法字符处理、设备号回退、位置比较、上传后清理暂存文件、未联网时的提示流程 |
+| `tests/state_spec.lua`（40 条） | 文本锚点规范化（UTF-8 按字符计数）、阅读位置采集（含新增锚点）、记录校验与向后兼容 |
+
+跑法（需要 LuaJIT，与 KOReader 运行时同款）：
+
+```powershell
+cd "D:/path/to/repo"
+$lj = "C:\Users\USER\AppData\Local\Programs\LuaJIT\bin\luajit.exe"
+& $lj tests\webdav_spec.lua
+& $lj tests\main_spec.lua
+& $lj tests\state_spec.lua
+```
 
 已知环境限制:Windows 上 LuaJIT 通过 ANSI 代码页打开文件,含中文的**本地**路径会报
 `Illegal byte sequence`,所以测试夹具刻意使用 ASCII 本地文件名(远端名仍含中文)。
@@ -82,7 +93,20 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
    → 统一改用副本(`provider_base()`),上传兼容路径用完还恢复原对象。
 6. 文档口径更正:账号密码确实会明文保存在 `settings.reader.lua`(README 原文声称不会);
    文件名示例里多了个 `+`;「秒级时间戳可避免重名」的说法不成立(同秒仍会重名覆盖)。
-   版本号提升到 `0.2.14-alpha`。
+7. **跨设备定位不准(0.2.15)。** 实测:在 8922 页的设备上于第 2222 页上传,到 8689 页的设备
+   落到第 2164 页——正好等于 `floor(percent × 本机总页数) + 1`,说明走的是页数比例换算。
+   根因有两层:
+   - 记录里的 `percent` 来自 `ReaderFooter:getBookProgress()` = `pageno / pages`,
+     它是「页序占本机总页数的比例」,**天然依赖排版**,不可能跨设备精确;
+   - `confirm_jump` 只在 `ui.rolling and isXPointerInDocument(...)` 成立时才用 xpointer,
+     该校验失败就直接掉进页数比例分支,xpointer 等于被忽略。
+   → 记录新增两个与排版无关的锚点:`pos_percent`(内容高度比例)与 `text_anchor`(正文片段);
+     跳转改为分级 `_plan_jump()`:xpointer → 文本锚点全文搜索(用 pos_percent 消歧)→ 页数比例。
+     同时把使用的方式显示在确认框里,便于诊断。字段是可选新增,schema_version 仍为 1,
+     旧记录自动降级。
+   → 另注:无效 xpointer **不能**直接交给 crengine,`gotoXPointer` 在 `createXPointer` 失败时
+     `SetPos(0)` 会跳到书首;而 `getPageFromXPointer` 失败时静默返回 1,也不能当判据。
+     所以有效性预检必须保留(`isXPointerInDocument` = `!createXPointer().isNull()`)。
 
 ## 仍未处理
 
@@ -96,4 +120,9 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
 4. `pick_server()` 里 `require("apps/cloudstorage/syncservice")` 的兜底分支在现行 KOReader
    上不可达(cloudstorage 已迁到 `plugins/cloudstorage.koplugin`,`onShowCloudStorageList`
    就在其 `main.lua`),可清理。
-5. **下载链路此前从未真正跑通过**(两个致命 bug 都在其中),本次修复后必须实机确认一次完整流程。
+5. 文本锚点取自 xpointer 所在**段落**的文本,所以锚点指向段落开头;若原位置在段落中间,
+   降级到文本锚点时误差为「小半个段落」。要彻底消除,需要把 xpointer 里的 `text().N`
+   偏移也带上(注意 N 是字符偏移,不能按字节截断)。
+6. `findAllText` 是全文档搜索,超大书籍上可能在 UI 线程卡顿一两秒
+   (KOReader 自己的搜索会用 `Device:setIgnoreInput(true)` 挡住输入,本插件暂未加)。
+7. **两条链路都改过之后,仍需实机确认一次完整流程**(上传 → 另一台设备下载 → 跳转)。
