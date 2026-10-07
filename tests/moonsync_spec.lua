@@ -46,7 +46,20 @@ end
 package.preload["ui/widget/infomessage"] = function() return { new = function(_, o) return o or {} end } end
 package.preload["ui/widget/confirmbox"]  = function() return { new = function(_, o) return o or {} end } end
 -- 真正的 inkbridge_webdav 会拉进一大堆 KOReader 模块,这里只用它做跳转,桩掉即可
-package.preload["inkbridge_webdav"] = function() return {} end
+-- 真正的 inkbridge_webdav 会拉进一大堆 KOReader 模块,这里只用它做跳转,桩掉即可。
+-- human_age 给一份等价实现:真机上是 WebDAV.human_age,它本身在 webdav_spec 里有测试;
+-- 这里要验的是 peek_label 的**拼装**,不是时间格式化。
+package.preload["inkbridge_webdav"] = function()
+    return { human_age = function(s)
+        if not s or s < 0 then return "未知" end
+        if s < 60 then return "刚刚" end
+        local m = math.floor(s / 60)
+        if m < 60 then return tostring(m) .. " 分钟前" end
+        local h = math.floor(m / 60)
+        if h < 24 then return tostring(h) .. " 小时前" end
+        return tostring(math.floor(h / 24)) .. " 天前"
+    end }
+end
 
 local is_windows = package.config:sub(1, 1) == "\\"
 package.preload["ffi/util"] = function()
@@ -132,7 +145,8 @@ do
                             "section_blocks_tagged", "book_metrics", "get_book_ref",
                             "learn_book_ref", "request", "backup_po", "import_from_moon",
                             "push_to_moon", "_do_push", "build_push_job", "auto_push",
-                            "auto_enabled", "set_auto", "local_position", "describe_direction" }) do
+                            "auto_enabled", "set_auto", "local_position", "describe_direction",
+                            "peek_po", "peek_label" }) do
         check("导出 " .. name, type(MS[name]) == "function")
     end
 end
@@ -457,6 +471,18 @@ do
     eq("xpointer 解析不出时返回 nil",
        MS.local_position({ ui = { document = { file = "fake.epub",
            getXPointer = function() return "没有 DocFragment" end } } }), nil)
+end
+
+print("== 下载列表里的静读天下一行 ==")
+do
+    eq("取不到数据时的文案", MS.peek_label(nil, 1000), "静读天下：无数据")
+    eq("缺字段也当无数据", MS.peek_label({}, 1000), "静读天下：无数据")
+
+    local peek = { po = { star = 167 }, modified = 1000 }
+    eq("带新鲜度的一行",
+       MS.peek_label(peek, 1000 + 180), "静读天下 · 第 168 章 · 3 分钟前")
+    eq("没有服务器时间时省掉那一段",
+       MS.peek_label({ po = { star = 0 } }, 1000), "静读天下 · 第 1 章")
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

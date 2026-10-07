@@ -429,7 +429,10 @@ function WebDAV.list_history(plugin, prefix, callback)
 end
 
 -- 显示可读的历史记录列表。只显示最近三条，具体跳转仍由用户确认。
-function WebDAV.choose_history(plugin, entries, on_select)
+-- extra(可选)是一条**不属于 KO 记录**的附加项(例如静读天下的 .po):
+--   { text = "静读天下 · 第 168 章 · 8 分钟前", on_select = function() ... end }
+-- 它固定排在最后 —— 它没有和 KO 记录可比的时间轴。
+function WebDAV.choose_history(plugin, entries, on_select, extra)
     local buttons = {}
     for i, item in ipairs(entries) do
         if i > 3 then break end
@@ -437,6 +440,15 @@ function WebDAV.choose_history(plugin, entries, on_select)
             { text = item.text, callback = function()
                 UIManager:close(plugin._history_dialog)
                 on_select(item)
+            end },
+        })
+    end
+    local has_extra = type(extra) == "table" and type(extra.text) == "string"
+    if has_extra then
+        table.insert(buttons, {
+            { text = extra.text, callback = function()
+                UIManager:close(plugin._history_dialog)
+                if type(extra.on_select) == "function" then extra.on_select() end
             end },
         })
     end
@@ -448,7 +460,8 @@ function WebDAV.choose_history(plugin, entries, on_select)
         { text = "取消", callback = function() UIManager:close(plugin._history_dialog) end },
     })
     plugin._history_dialog = ButtonDialog:new{
-        title = "选择远端历史记录（最近三次）",
+        title = has_extra and "选择要跳转的进度"
+                            or "选择远端历史记录（最近三次）",
         buttons = buttons,
     }
     UIManager:show(plugin._history_dialog)

@@ -415,14 +415,16 @@ function Moonsync.request(server, url, method, body)
     if ok_util and socketutil then
         socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
     end
-    local ok, code, _, status = pcall(function()
+    local ok, code, hdrs, status = pcall(function()
         return socket.skip(1, http.request(req))
     end)
     if ok_util and socketutil then socketutil:reset_timeout() end
     if not ok then return nil, nil, nil, tostring(code) end
 
+    -- 第 5 个返回值是响应头 —— 静读天下 .po 的 Last-Modified 要用它
+    -- (那是**服务器时间**,可以跨设备比较;.po 内容里没有时间戳)。
     return tonumber(code), tostring(status or ""),
-           (method == "GET") and table.concat(sink) or "", nil
+           (method == "GET") and table.concat(sink) or "", nil, hdrs
 end
 
 -- 把云端原值备份到插件目录(本地,不往云端多写文件)。
@@ -672,6 +674,59 @@ function Moonsync.push_to_moon(plugin)
         cancel_text = "取消",
         ok_callback = function() Moonsync._do_push(plugin, job) end,
     })
+end
+
+-- ── 给下载列表用:只看一眼 .po,不弹任何界面 ───────────────────────────────
+
+-- 取回静读天下的 .po 并附上**服务器时间**,然后回调:
+--   { po = <解析结果>, url = ..., filename = ..., modified = <Unix 秒或 nil> }
+-- 取不到(书没在静读天下里 / 没网 / 目录不对)就回调 nil —— 由调用方决定怎么显示。
+function Moonsync.peek_po(plugin, callback)
+    if type(callback) ~= "function" then return end
+    local doc = plugin and plugin.ui and plugin.ui.document
+    if not doc or type(doc.file) ~= "string" then callback(nil); return end
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then callback(nil); return end
+    local filename = Moon.po_filename(doc.file)
+    if not filename then callback(nil); return end
+
+    local url = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
+    local code, _, body, _, headers = Moonsync.request(server, url, "GET")
+    if not code or tonumber(code) ~= 200 or type(body) ~= "string" or body == "" then
+        callback(nil); return
+    end
+    local po = Moon.parse(body)
+    if not po then callback(nil); return end
+
+    -- Last-Modified 是 RFC1123 字符串。转换用 KOReader 自己的函数
+    -- (frontend/datetime.lua:322,是**模块函数**,点号调用);
+    -- 转不出来就退化成"没有新鲜度",不影响其余信息。
+    local modified
+    local hdr = type(headers) == "table"
+        and (headers["last-modified"] or headers["Last-Modified"]) or nil
+    if type(hdr) == "string" then
+        local ok_dt, datetime = pcall(require, "datetime")
+        if ok_dt and datetime and datetime.stringRFC1123ToSeconds then
+            local ok_s, s = pcall(datetime.stringRFC1123ToSeconds, hdr)
+            if ok_s then modified = tonumber(s) end
+        end
+    end
+
+    callback({ po = po, url = url, filename = filename, modified = modified })
+end
+
+-- 下载列表里那一行怎么写(纯函数,便于测试)。
+-- 例:「静读天下 · 第 168 章 · 8 分钟前」;取不到数据时是「静读天下：无数据」。
+function Moonsync.peek_label(peek, now)
+    if type(peek) ~= "table" or type(peek.po) ~= "table" then
+        return "静读天下：无数据"
+    end
+    local parts = { "静读天下",
+                    string.format("第 %d 章", (tonumber(peek.po.star) or 0) + 1) }
+    if peek.modified and now then
+        parts[#parts + 1] = WebDAV.human_age(now - peek.modified)
+    end
+    return table.concat(parts, " · ")
 end
 
 return Moonsync

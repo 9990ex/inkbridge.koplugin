@@ -210,26 +210,42 @@ function InkBridge:_sync(entry, mode)
                 return
             end
 
-            WebDAV.choose_history(self, entries, function(item)
-                WebDAV.download(self, item.url, function(download_ok, remote, remote_err)
-                    if not download_ok then
-                        show("墨桥：下载失败 —— " .. WebDAV.describe_error(remote_err))
-                        return
-                    end
-                    if not remote then
-                        show("墨桥：没有找到这本书的远端阅读记录。")
-                        return
-                    end
-                    if remote.book_id ~= entry.book_id then
-                        show("墨桥：远端记录不属于当前书籍，已停止。")
-                        return
-                    end
-                    if not InkBridge:_position_differs(entry, remote) then
-                        show("墨桥：远端记录与当前位置相同。")
-                        return
-                    end
-                    UIManager:nextTick(function() WebDAV.confirm_jump(self, remote) end)
-                end)
+            -- 顺带看一眼静读天下的 .po,作为附加项列在最后。
+            -- 取不到**也照样列出来**(显示「静读天下：无数据»)——
+            -- 一项凭空消失比"明确告诉你没有"更让人困惑。
+            Moonsync.peek_po(self, function(peek)
+                local extra = {
+                    text = Moonsync.peek_label(peek, os.time()),
+                    on_select = function()
+                        if peek then
+                            Moonsync.import_from_moon(self)
+                        else
+                            show("墨桥：静读天下里没有这本书的进度文件。\n"
+                                .. "（手动选择文件的功能还在开发中）")
+                        end
+                    end,
+                }
+                WebDAV.choose_history(self, entries, function(item)
+                    WebDAV.download(self, item.url, function(download_ok, remote, remote_err)
+                        if not download_ok then
+                            show("墨桥：下载失败 —— " .. WebDAV.describe_error(remote_err))
+                            return
+                        end
+                        if not remote then
+                            show("墨桥：没有找到这本书的远端阅读记录。")
+                            return
+                        end
+                        if remote.book_id ~= entry.book_id then
+                            show("墨桥：远端记录不属于当前书籍，已停止。")
+                            return
+                        end
+                        if not InkBridge:_position_differs(entry, remote) then
+                            show("墨桥：远端记录与当前位置相同。")
+                            return
+                        end
+                        UIManager:nextTick(function() WebDAV.confirm_jump(self, remote) end)
+                    end)
+                end, extra)
             end)
         end)
         return
