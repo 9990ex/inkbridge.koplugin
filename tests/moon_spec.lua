@@ -170,5 +170,20 @@ do
        "https://d/Apps/%E6%AD%BB%E4%BA%BA%E7%BB%8F.epub.po")
 end
 
+-- ── 章节文件扩展名判定 ────────────────────────────────────────────────────
+-- 曾经的 bug:过滤写成 %.html?$,匹配不了 .xhtml,章节表被筛空,
+-- 于是任何一本用 .xhtml 的书都会报「章节序号超出本书范围」。
+print("== 章节文件扩展名 ==")
+do
+    check("xhtml 要认", Moon.is_html_href("OEBPS/Text/chapter1_35.xhtml"))
+    check("html 要认",  Moon.is_html_href("a.html"))
+    check("htm 要认",   Moon.is_html_href("a.htm"))
+    check("大写要认",   Moon.is_html_href("A.XHTML"))
+    check("css 不认",   not Moon.is_html_href("Styles/style.css"))
+    check("opf 不认",   not Moon.is_html_href("OEBPS/content.opf"))
+    check("无扩展名不认", not Moon.is_html_href("README"))
+    check("非字符串不认", not Moon.is_html_href(nil))
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)

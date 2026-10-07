@@ -155,6 +155,16 @@ function Moon.plain_text(html)
     return (t:gsub("%s+", ""))
 end
 
+-- 判断是不是正文类条目(`.xhtml` / `.html` / `.htm`,大小写不限)。
+--
+-- 这里曾经写成 `%.html?$` —— 那个模式**匹配不了 `.xhtml`**(它要求结尾正好是 ".htm"
+-- 或 ".html",而 ".xhtml" 结尾是 "xhtml"),于是章节表被过滤成空,任何一本用 .xhtml
+-- 的书都会报「章节序号超出本书范围」。教训:Lua 模式里表示扩展名要写成 `%.x?html?$`。
+function Moon.is_html_href(href)
+    if type(href) ~= "string" then return false end
+    return href:lower():match("%.x?html?$") ~= nil
+end
+
 -- 规范化用户填写的目录:去首尾空白、统一斜杠、去掉尾部斜杠。
 -- 允许以 "/" 开头,表示"从 WebDAV 服务器根算起"的绝对路径(见 build_url)。
 function Moon.normalize_dir(value, default)

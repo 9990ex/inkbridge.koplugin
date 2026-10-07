@@ -124,25 +124,35 @@ function Moonsync.section_text(epub_path, section_index)
     local ok_read, opf = pcall(function() return arc:extractToMemory(opf_key) end)
     if not ok_read or type(opf) ~= "string" then close(); return nil, "读不出 .opf" end
 
-    -- manifest: id → href   (注意 "<item%s" 不会匹配到 <itemref)
+    -- manifest: id → href   注意两点:
+    --   * "<item%s" 不会匹配到 <itemref(要求 "item" 后面跟空白);
+    --   * 属性引号两种都要认 —— 有的书用单引号。
     local manifest = {}
     for tag in opf:gmatch("<item%s[^>]*>") do
-        local id   = tag:match('id="([^"]+)"')
-        local href = tag:match('href="([^"]+)"')
+        local id   = tag:match([[id=["']([^"']+)["']]])
+        local href = tag:match([[href=["']([^"']+)["']]])
         if id and href then manifest[id] = href end
     end
 
-    -- spine 顺序,只保留 html 类条目 —— 与 Python 侧验证过的索引口径保持一致
-    local spine = {}
-    for idref in opf:gmatch('<itemref[^>]*idref="([^"]+)"') do
+    -- spine 顺序,只保留正文类条目 —— 与 Python 侧验证过的索引口径保持一致。
+    -- 但若按扩展名筛完一个都不剩(说明本书命名超出预期),退回未筛选的完整 spine:
+    -- 宁可索引可能错位,也不要整本书都读不了。
+    local spine_all, spine_html = {}, {}
+    for idref in opf:gmatch([[<itemref[^>]*idref=["']([^"']+)["']]]) do
         local href = manifest[idref]
-        if href and href:lower():match("%.html?$") then
-            spine[#spine + 1] = href
+        if href then
+            spine_all[#spine_all + 1] = href
+            if Moon.is_html_href(href) then spine_html[#spine_html + 1] = href end
         end
     end
+    local spine = #spine_html > 0 and spine_html or spine_all
 
     local href = spine[section_index + 1]
-    if not href then close(); return nil, "章节序号超出本书范围" end
+    if not href then
+        close()
+        return nil, string.format("章节序号 %d 超出本书范围（本书共 %d 章）",
+                                  section_index, #spine)
+    end
 
     local base = opf_key:match("^(.*)/[^/]*$")
     local key  = (base and base ~= "") and (base .. "/" .. href) or href
