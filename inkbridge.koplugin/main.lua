@@ -525,6 +525,11 @@ function InkBridge:_auto_check_remote()
     if last and now - last < InkBridge.AUTO_CHECK_INTERVAL then return end
     self._auto_check_at[entry.book_id] = now
 
+    -- ★ 两条路**互相独立**。之前把 _auto_check_moon 放在 list_history 的回调里,
+    -- 于是"这本书没有 KO 云端记录"时回调直接 return,静读天下那条**永远不执行** ——
+    -- 真机上就表现为"打开书毫无反应"。KO 记录为空/失败,绝不能挡住另一条路。
+    self:_auto_check_moon(entry)
+
     WebDAV.list_history(self, self:_history_prefix(entry), function(ok, records)
         if not ok or type(records) ~= "table" or #records == 0 then return end
 
@@ -541,11 +546,7 @@ function InkBridge:_auto_check_remote()
         for _, c in pairs(newest) do cands[#cands + 1] = c end
 
         local updates = WebDAV.select_updates(cands, self:_get_seen(entry.book_id))
-        if #updates == 0 then
-            -- KO 那边没有更新,但静读天下可能变过 —— 接着看它
-            self:_auto_check_moon(entry)
-            return
-        end
+        if #updates == 0 then return end
         self:_ask_remote_update(entry, updates)
     end)
 end
@@ -565,10 +566,11 @@ function InkBridge:_auto_check_moon(entry)
         if G_reader_settings:readSetting(key) == fp then return end   -- 没变过
 
         local pos = Moonsync.local_position(self)
-        -- 算不出本机偏移时**不下结论、也不提示**:宁可不打扰,
-        -- 也不要因为"分不清是不是自己刚写的"而反复弹窗。
-        if not pos or not tonumber(pos.hash) then return end
-        local same_place = pos.section == tonumber(peek.po.star)
+        -- 算不出本机偏移时**也照提示**:页首停在章标题上时算不出偏移,而"翻开书停在
+        -- 章首页"极常见 —— 若因此静默,用户会觉得功能根本没生效。
+        -- 代价是可能误报一次(例如刚上传过、本地又正好停在标题页),点「忽略」即可。
+        local same_place = pos and tonumber(pos.hash)
+            and pos.section == tonumber(peek.po.star)
             and math.abs((tonumber(pos.hash) or 0) - (tonumber(peek.po.hash) or 0)) < 200
         G_reader_settings:saveSetting(key, fp)
         if same_place then return end
