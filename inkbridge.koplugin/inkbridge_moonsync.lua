@@ -408,7 +408,8 @@ function Moonsync._do_push(plugin, job)
         return
     end
 
-    local back, _, body = Moonsync.request(server, job.url, "GET")
+    -- 只看回读的正文(第 1、2 个返回值是状态码与状态文本,这里用不上)
+    local _, _, body = Moonsync.request(server, job.url, "GET")
     local verdict
     if type(body) == "string" then
         body = body:gsub("[\r\n]+$", "")
