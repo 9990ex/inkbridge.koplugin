@@ -247,6 +247,59 @@ function Moonsync.book_metrics(epub_path)
     return metrics, false
 end
 
+-- 本机当前位置的 (章节序号 0 基, 章内字符偏移)。算不出返回 nil。
+-- 用途只有一个:给导入确认框加一句"远端比本机更早/更晚"的方向提示。
+-- 它**不参与定位** —— 算不出来也不该挡住导入,所以这里失败一律返回 nil 而不是报错。
+function Moonsync.local_position(plugin)
+    local doc = plugin and plugin.ui and plugin.ui.document
+    if not doc or type(doc.file) ~= "string" or type(doc.getXPointer) ~= "function" then
+        return nil
+    end
+    local ok_xp, xp = pcall(doc.getXPointer, doc)
+    if not ok_xp or type(xp) ~= "string" or xp == "" then return nil end
+
+    local pos = Moon.parse_xpointer(xp)
+    if not pos then return nil end
+
+    local tagged = Moonsync.section_blocks_tagged(doc.file, pos.section)
+    if not tagged then return nil end
+
+    local hash = Moon.offset_from_tagged(tagged, pos.p_index, pos.text_offset)
+    if not hash then return nil end
+
+    return { section = pos.section, hash = hash }
+end
+
+-- 比较远端与本机位置,给出一句人话方向提示(纯函数,便于测试)。
+--
+-- 为什么要它:两端的"位置"其实是准的(实测只差几个字),误差来自**页**这个单位的粗粒度
+-- —— 差 4 个字就可能整整退一页。既然修不了(见 research/moonplus-po-format.md §8.4),
+-- 至少要让你在点「跳转」之前知道会往哪边走。
+--
+-- remote / local 都是 { section = 章节序号(0 基), hash = 章内字符偏移 }。
+function Moonsync.describe_direction(remote, local_pos)
+    if type(remote) ~= "table" or type(local_pos) ~= "table" then return nil end
+    local rs, ls = tonumber(remote.section), tonumber(local_pos.section)
+    local rh, lh = tonumber(remote.hash),    tonumber(local_pos.hash)
+    if not (rs and ls and rh and lh) then return nil end
+
+    local here = string.format("本机位置：第 %d 章，章内第 %d 字", ls, lh)
+    if rs < ls then
+        return string.format("静读天下的位置比本机更早（第 %d 章）—— 跳过去是往回退\n%s", rs, here)
+    end
+    if rs > ls then
+        return string.format("静读天下的位置比本机更晚（第 %d 章）—— 跳过去是前进\n%s", rs, here)
+    end
+
+    local d = rh - lh
+    if d == 0 then
+        return string.format("静读天下的位置与本机完全相同\n%s", here)
+    elseif d < 0 then
+        return string.format("静读天下的位置比本机更早 %d 字 —— 跳过去是往回退\n%s", -d, here)
+    end
+    return string.format("静读天下的位置比本机更晚 %d 字 —— 跳过去是前进\n%s", d, here)
+end
+
 -- 主流程:取回 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
 function Moonsync.import_from_moon(plugin)
     local body, ferr = Moonsync.fetch_po(plugin)
@@ -285,11 +338,18 @@ function Moonsync.import_from_moon(plugin)
     -- "页数比例"去换算页码 —— 直接传会落到完全不同的位置(实测踩过这个坑)。
     -- 内容比例只用于搜索命中时的消歧(pos_percent);搜索不命中就如实报错,
     -- 不碰任何兜底,免得"跳到一个错误的位置"比"报错"更糟。
+    -- 方向提示:先算出本机位置,再和远端的 (*章序号, #章内偏移) 比一比。
+    -- 只是给确认框加一句话,算不出来就不加,绝不挡住导入。
+    local local_pos = Moonsync.local_position(plugin)
+    local dir_note  = local_pos and Moonsync.describe_direction(
+        { section = po.star, hash = po.hash }, local_pos) or nil
+
     local ok_jump, jerr = pcall(function()
         WebDAV.confirm_jump(plugin, {
             text_anchor  = snippet,
             pos_percent  = po.pct / 100,
             device_label = "静读天下",
+            dir_note     = dir_note,
         })
     end)
     if not ok_jump then

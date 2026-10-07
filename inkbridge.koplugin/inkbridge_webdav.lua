@@ -548,6 +548,11 @@ function WebDAV.confirm_jump(plugin, remote)
     local lines = {
         string.format("远端阅读位置：%.2f%%%s", (shown_pct or 0) * 100, pct_note),
     }
+    -- 方向提示(可选):静读天下那条路会带上"远端比本机更早/更晚"。
+    -- 页级定位下,差几个字就可能整整退一页,所以跳之前先说清往哪边走。
+    if type(remote.dir_note) == "string" and remote.dir_note ~= "" then
+        table.insert(lines, remote.dir_note)
+    end
     if remote.page and remote.total_pages then
         table.insert(lines, string.format("远端设备：第 %s / %s 页",
             tostring(remote.page), tostring(remote.total_pages)))

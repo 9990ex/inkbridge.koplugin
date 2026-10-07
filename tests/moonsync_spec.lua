@@ -132,7 +132,7 @@ do
                             "section_blocks_tagged", "book_metrics", "get_book_ref",
                             "learn_book_ref", "request", "backup_po", "import_from_moon",
                             "push_to_moon", "_do_push", "build_push_job", "auto_push",
-                            "auto_enabled", "set_auto" }) do
+                            "auto_enabled", "set_auto", "local_position", "describe_direction" }) do
         check("导出 " .. name, type(MS[name]) == "function")
     end
 end
@@ -396,6 +396,67 @@ do
     eq("skip 时返回 nil(连提示都不加)",
        MS.auto_push({ path = tmp, server = server, ui = { document = doc_h } }), nil)
     eq("skip 时确实没弹窗", #shown, 0)
+end
+
+-- ── 方向提示(导入确认框里那一句) ─────────────────────────────────────────
+print("== 方向提示:远端比本机更早/更晚 ==")
+do
+    -- 真实数据:本机在第 167 章 #1806,静读天下回写到 #1802
+    local remote = { section = 167, hash = 1802 }
+    local earlier = MS.describe_direction(remote, { section = 167, hash = 1806 })
+    check("同章更早:报出差值", type(earlier) == "string"
+          and earlier:find("更早 4 字", 1, true) ~= nil, earlier)
+    check("同章更早:说明是往回退", type(earlier) == "string"
+          and earlier:find("往回退", 1, true) ~= nil, earlier)
+    check("带上本机位置便于对照", type(earlier) == "string"
+          and earlier:find("章内第 1806 字", 1, true) ~= nil, earlier)
+
+    local later = MS.describe_direction(remote, { section = 167, hash = 1700 })
+    check("同章更晚", type(later) == "string"
+          and later:find("更晚 102 字", 1, true) ~= nil
+          and later:find("前进", 1, true) ~= nil, later)
+
+    local same = MS.describe_direction(remote, { section = 167, hash = 1802 })
+    check("完全相同要明说", type(same) == "string"
+          and same:find("完全相同", 1, true) ~= nil, same)
+
+    local ch_early = MS.describe_direction({ section = 100, hash = 5 },
+                                           { section = 167, hash = 1806 })
+    check("跨章:更早", type(ch_early) == "string"
+          and ch_early:find("更早（第 100 章）", 1, true) ~= nil, ch_early)
+
+    local ch_late = MS.describe_direction({ section = 200, hash = 5 },
+                                          { section = 167, hash = 1806 })
+    check("跨章:更晚", type(ch_late) == "string"
+          and ch_late:find("更晚（第 200 章）", 1, true) ~= nil, ch_late)
+
+    eq("缺远端返回 nil", MS.describe_direction(nil, { section = 1, hash = 1 }), nil)
+    eq("缺字段返回 nil", MS.describe_direction({}, { section = 1, hash = 1 }), nil)
+    eq("缺本机返回 nil", MS.describe_direction(remote, nil), nil)
+end
+
+print("== 本机位置(方向提示的输入) ==")
+do
+    -- 假归档第 1 章:标题「第一章」(3 字) + 两段(各 5 字);
+    -- 第 2 个 <p> 段内第 3 字 → 3 + 5 + 3 = 11
+    local plugin = {
+        ui = { document = {
+            file = "fake.epub",
+            getXPointer = function() return "/body/DocFragment[1]/body/p[2]/text().3" end,
+        } },
+    }
+    local pos = MS.local_position(plugin)
+    check("能算出本机位置", pos ~= nil)
+    if pos then
+        eq("  章节序号", pos.section, 0)
+        eq("  章内偏移", pos.hash, 11)
+    end
+    eq("没开书时返回 nil", MS.local_position({ ui = {} }), nil)
+    eq("取不到 xpointer 时返回 nil",
+       MS.local_position({ ui = { document = { file = "fake.epub" } } }), nil)
+    eq("xpointer 解析不出时返回 nil",
+       MS.local_position({ ui = { document = { file = "fake.epub",
+           getXPointer = function() return "没有 DocFragment" end } } }), nil)
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
