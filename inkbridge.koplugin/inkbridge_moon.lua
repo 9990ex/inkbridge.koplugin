@@ -320,7 +320,9 @@ end
 function Moon.offset_from_tagged(tagged, p_index, text_offset)
     if type(tagged) ~= "table" or #tagged == 0 then return nil, "本章没有正文块" end
     if type(p_index) ~= "number" or p_index <= 0 then
-        return nil, "xpointer 没有指向任何 <p>（可能停在标题或图片上）"
+        -- 第三个返回值是给调用方分类用的："nop" 表示这次是"停在标题/图片上"这种
+        -- **正常偶发**情况,自动写回时不该当成错误弹窗。
+        return nil, "xpointer 没有指向任何 <p>（可能停在标题或图片上）", "nop"
     end
     text_offset = tonumber(text_offset) or 0
 

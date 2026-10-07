@@ -247,7 +247,17 @@ function InkBridge:_sync(entry, mode)
         -- 才真正读完该文件；且回调只会触发一次（WebDAV.upload 内部有去重）。
         os.remove(history_path)
         if upload_ok then
-            show("墨桥：阅读进度上传成功。")
+            -- 顺手把进度写进静读天下的 .po:上传本身就是在声明"我这边是最新的",
+            -- 静读天下因此能无感跟随,不必再多点一次按键。
+            -- 整段用 pcall 包住:写回失败绝不能影响"上传成功"这个结论。
+            local moon_note
+            local ok_auto, note = pcall(Moonsync.auto_push, self)
+            if ok_auto then
+                moon_note = note
+            else
+                moon_note = "静读天下未同步（内部错误：" .. tostring(note) .. "）"
+            end
+            show("墨桥：阅读进度上传成功。" .. (moon_note and ("\n" .. moon_note) or ""))
         else
             show("墨桥：阅读进度上传失败 —— " .. WebDAV.describe_error(upload_err))
         end
@@ -313,7 +323,15 @@ function InkBridge:addToMainMenu(menu_items)
                 { text = "上传当前阅读进度", callback = function() self:upload_current() end },
                 { text = "下载并检查阅读进度", callback = function() self:download_current() end },
                 { text = "从静读天下读取进度", callback = function() Moonsync.import_from_moon(self) end },
-                { text = "把本机进度写入静读天下", callback = function() Moonsync.push_to_moon(self) end },
+                -- 写回不在菜单里放"按钮":上传进度时会自动写(见 _sync 的成功回调)。
+                -- 这里只留一个开关,因为它是**覆盖另一台设备状态**的动作。
+                { text = "上传时自动写入静读天下",
+                  checked_func = function() return Moonsync.auto_enabled() end,
+                  callback = function()
+                      Moonsync.set_auto(not Moonsync.auto_enabled())
+                      show("墨桥：上传时自动写入静读天下已"
+                          .. (Moonsync.auto_enabled() and "开启。" or "关闭。"))
+                  end },
                 { text = "设置静读天下同步目录", callback = function() self:set_moon_dir() end },
             }
         end,
@@ -328,6 +346,7 @@ function InkBridge:deletePluginSettings()
     G_reader_settings:delSetting("inkbridge_webdav_server")
     G_reader_settings:delSetting("inkbridge_moon_dir")
     G_reader_settings:delSetting("inkbridge_moon_book_ref")
+    G_reader_settings:delSetting("inkbridge_moon_auto_push")
 end
 
 return InkBridge

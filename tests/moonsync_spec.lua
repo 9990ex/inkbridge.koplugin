@@ -131,7 +131,8 @@ do
     for _, name in ipairs({ "get_dir", "set_dir", "fetch_po", "section_html", "section_blocks",
                             "section_blocks_tagged", "book_metrics", "get_book_ref",
                             "learn_book_ref", "request", "backup_po", "import_from_moon",
-                            "push_to_moon", "_do_push" }) do
+                            "push_to_moon", "_do_push", "build_push_job", "auto_push",
+                            "auto_enabled", "set_auto" }) do
         check("导出 " .. name, type(MS[name]) == "function")
     end
 end
@@ -289,6 +290,112 @@ do
     })
     check("传输失败要说清原因", shown[#shown] ~= nil
           and shown[#shown].text:find("连接超时", 1, true) ~= nil)
+end
+
+-- ── 顺手写回(上传进度时自动执行) ──────────────────────────────────────────
+print("== 顺手写回:算得出与算不出 ==")
+do
+    local tmp = (os.getenv("TEMP") or "/tmp")
+    local server = { type = "webdav", address = "https://dav", url = "Books",
+                     username = "u", password = "p" }
+    -- 假归档的第 1 章:标题「第一章」(3) + 两段(各 5)。
+    -- 取第 2 个 <p> 的段内第 3 字 → 3 + 5 + 3 = 11
+    local plugin = {
+        path = tmp, server = server,
+        ui = { document = {
+            file = "fake.epub",
+            getXPointer = function() return "/body/DocFragment[1]/body/p[2]/text().3" end,
+            getTextFromXPointer = function() return "八九十" end,
+        } },
+    }
+
+    local job, err, kind = MS.build_push_job(plugin)
+    check("能算出写入内容", job ~= nil, err)
+    if job then
+        eq("章节序号(0 基)", job.section, 0)
+        eq("章内偏移", job.hash, 11)
+        eq("自检标记", job.checked, "已通过")
+        -- 11 / 21(全书字数) = 52.38%
+        eq("生成的整行", job.body, "1785683827794*0@0#11:52.4%")
+        eq("目标 URL", job.url,
+           "https://dav/Books/Apps/Books/.Moon+/Cache/fake.epub.po")
+        eq("文件名沿用本机书名", job.filename, "fake.epub.po")
+    end
+
+    -- 停在标题上(xpointer 没有 p[])属于**正常偶发**,要归到 skip,不能弹错误
+    local doc_h = {
+        file = "fake.epub",
+        getXPointer = function() return "/body/DocFragment[1]/body/h2/text().1" end,
+        getTextFromXPointer = function() return "第一章" end,
+    }
+    local job_h, err_h, kind_h = MS.build_push_job({ path = tmp, server = server,
+                                                     ui = { document = doc_h } })
+    eq("标题上算不出内容", job_h, nil)
+    eq("类别是 skip", kind_h, "skip")
+    check("原因说得清", type(err_h) == "string" and err_h:find("段落", 1, true) ~= nil, err_h)
+
+    -- 没有账号级常量:这是真问题,要归到 error
+    local saved_ref = settings["inkbridge_moon_book_ref"]
+    settings["inkbridge_moon_book_ref"] = nil
+    local job_e, _, kind_e = MS.build_push_job(plugin)
+    eq("没有常量时算不出", job_e, nil)
+    eq("类别是 error", kind_e, "error")
+    settings["inkbridge_moon_book_ref"] = saved_ref
+end
+
+print("== 顺手写回:开关与静默 ==")
+do
+    local tmp = (os.getenv("TEMP") or "/tmp")
+    local server = { type = "webdav", address = "https://dav", url = "Books" }
+    local plugin = {
+        path = tmp, server = server,
+        ui = { document = {
+            file = "fake.epub",
+            getXPointer = function() return "/body/DocFragment[1]/body/p[2]/text().3" end,
+            getTextFromXPointer = function() return "八九十" end,
+        } },
+    }
+
+    settings["inkbridge_moon_auto_push"] = nil
+    eq("默认是开启", MS.auto_enabled(), true)
+    MS.set_auto(false)
+    eq("可以关掉", MS.auto_enabled(), false)
+    eq("关掉后 auto_push 直接返回 nil", MS.auto_push(plugin), nil)
+    MS.set_auto(true)
+
+    -- 让 PUT/GET 自洽:GET 回读到的就是刚写下去的那一行
+    local last_put
+    MS.request = function(_, _, method, body)
+        if method == "PUT" then last_put = body; return 201, "Created", nil, nil end
+        return 200, "OK", last_put, nil
+    end
+
+    shown = {}
+    local note = MS.auto_push(plugin)
+    check("返回一句话结果", type(note) == "string"
+          and note:find("已同步给静读天下", 1, true) ~= nil, note)
+    eq("静默模式不额外弹窗(结果由上传提示一起显示)", #shown, 0)
+    eq("写下去的确实是刚算出的那一行", last_put, "1785683827794*0@0#11:52.4%")
+
+    -- 静默 ≠ 吞掉失败:失败必须能从返回值里读到
+    MS.request = function() return 500, "err", nil, nil end
+    shown = {}
+    local job = MS.build_push_job(plugin)
+    local ok_silent, brief = MS._do_push(plugin, job, { silent = true })
+    eq("静默模式下失败不弹窗", #shown, 0)
+    eq("但返回值说失败", ok_silent, false)
+    check("并且给出可读原因", type(brief) == "string"
+          and brief:find("写入失败", 1, true) ~= nil, brief)
+
+    -- skip 类别自动保持沉默
+    local doc_h = {
+        file = "fake.epub",
+        getXPointer = function() return "/body/DocFragment[1]/body/h2/text().1" end,
+    }
+    shown = {}
+    eq("skip 时返回 nil(连提示都不加)",
+       MS.auto_push({ path = tmp, server = server, ui = { document = doc_h } }), nil)
+    eq("skip 时确实没弹窗", #shown, 0)
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

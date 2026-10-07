@@ -388,75 +388,115 @@ function Moonsync.backup_po(plugin, filename, old_body)
 end
 
 -- 真正执行:备份 → PUT → 回读校验。
-function Moonsync._do_push(plugin, job)
+--
+-- opts.silent = true 时不弹窗(供「上传进度」顺手调用,结果由调用方拼进它自己的提示里),
+-- 但**失败也照样返回**给调用方,绝不静默吞掉。
+-- 返回 是否校验通过, 一句话结果(给用户看)。
+function Moonsync._do_push(plugin, job, opts)
+    local silent = opts and opts.silent
     local server = plugin.server
+    local where = string.format("第 %d 章，章内偏移 %d", job.section, job.hash)
 
-    local backup_path, berr
+    local backup_path = nil
     if job.old_body then
-        backup_path, berr = Moonsync.backup_po(plugin, job.filename, job.old_body)
+        backup_path = Moonsync.backup_po(plugin, job.filename, job.old_body)
     end
-    local tail = backup_path and ("\n备份：" .. backup_path) or ""
+    local backup_tail = backup_path and ("\n备份：" .. backup_path) or ""
 
     local code, status, _, err = Moonsync.request(server, job.url, "PUT", job.body)
     if not code then
-        show("墨桥：写入失败（" .. tostring(err) .. "）。\n云端内容未被改动。" .. tail)
-        return
+        local brief = "写入失败（静读天下：" .. tostring(err) .. "）"
+        if not silent then
+            show("墨桥：" .. brief .. "\n云端内容未被改动。" .. backup_tail)
+        end
+        return false, brief
     end
     if code < 200 or code > 299 then
-        show(string.format("墨桥：写入失败，服务器返回 %s（%s）。\n云端内容未被改动。%s",
-            tostring(code), tostring(status), tail))
-        return
+        local brief = string.format("写入失败（静读天下：服务器返回 %s）", tostring(code))
+        if not silent then
+            show("墨桥：" .. brief .. "\n云端内容未被改动。" .. backup_tail)
+        end
+        return false, brief
     end
 
     -- 只看回读的正文(第 1、2 个返回值是状态码与状态文本,这里用不上)
     local _, _, body = Moonsync.request(server, job.url, "GET")
-    local verdict
-    if type(body) == "string" then
-        body = body:gsub("[\r\n]+$", "")
-        verdict = (body == job.body) and "回读校验：一致 ✓"
-                                          or ("回读校验：**不一致**，云端现在是 " .. body)
+    if type(body) == "string" then body = body:gsub("[\r\n]+$", "") end
+
+    local verified = (type(body) == "string" and body == job.body)
+    local verdict, brief
+    if verified then
+        verdict = "回读校验：一致 ✓"
+        brief   = "已同步给静读天下（" .. where .. "）"
+    elseif type(body) == "string" then
+        verdict = "回读校验：**不一致**，云端现在是 " .. body
+        brief   = "静读天下已写入，但回读不一致"
     else
         verdict = "回读校验：取不回来"
+        brief   = "静读天下已写入，但回读失败"
     end
 
-    show(string.format("墨桥：已写入静读天下。\n第 %d 章，章内偏移 %d\n%s\n内容：%s%s",
-        job.section, job.hash, verdict, job.body, tail))
+    if not silent then
+        show("墨桥：已写入静读天下。\n" .. where .. "\n" .. verdict
+            .. "\n内容：" .. job.body .. backup_tail)
+    end
+    return verified, brief
 end
 
--- 主流程(反向):取本机位置 → 换算 → 自检 → 让用户确认 → 备份并覆盖云端 .po
-function Moonsync.push_to_moon(plugin)
+-- ── 顺手写回:上传进度时自动执行 ──────────────────────────────────────────
+--
+-- 为什么默认开启:上传进度本身就是在声明"我这边是最新的",顺手把 .po 一并写了,
+-- 静读天下就自然跟上,用户不必再多点一次按键。
+-- 但它毕竟是**覆盖另一台设备状态**的动作,所以留了开关(菜单里可关)。
+
+Moonsync.AUTO_SETTING = "inkbridge_moon_auto_push"
+
+function Moonsync.auto_enabled()
+    if not G_reader_settings then return true end
+    local v = G_reader_settings:readSetting(Moonsync.AUTO_SETTING)
+    if v == nil then return true end          -- 默认开启
+    return v and true or false
+end
+
+function Moonsync.set_auto(on)
+    if G_reader_settings then
+        G_reader_settings:saveSetting(Moonsync.AUTO_SETTING, on and true or false)
+    end
+end
+
+-- 算出要写入的内容。**不做任何界面动作**,这样上传流程也能直接调用。
+--
+-- 返回 job 表;或 nil + 人话原因 + 类别:
+--   "skip"  = 这次本来就不适用(没开书 / 停在标题上 / 格式不支持),不必打扰用户
+--   "error" = 该让用户知道的问题
+function Moonsync.build_push_job(plugin)
     local doc = plugin and plugin.ui and plugin.ui.document
     if not doc or type(doc.file) ~= "string" then
-        show("墨桥：当前没有打开的书。")
-        return
+        return nil, "当前没有打开的书", "skip"
     end
     local server = plugin and plugin.server
     if type(server) ~= "table" or server.type ~= "webdav" then
-        show("墨桥：还没有设置 WebDAV 目标。")
-        return
+        return nil, "还没有设置 WebDAV 目标", "skip"
     end
     if type(doc.getXPointer) ~= "function" then
-        show("墨桥：这本书取不到阅读位置，暂时只能单向读取。")
-        return
+        return nil, "这本书的格式取不到阅读位置", "skip"
     end
 
     local xp = doc:getXPointer()
     local pos, perr = Moon.parse_xpointer(xp)
     if not pos then
-        show("墨桥：读不出当前阅读位置（" .. tostring(perr) .. "）。")
-        return
+        return nil, "读不出当前阅读位置（" .. tostring(perr) .. "）", "error"
     end
 
     local tagged, berr = Moonsync.section_blocks_tagged(doc.file, pos.section)
     if not tagged then
-        show("墨桥：读不出本机这本书的对应章节（" .. tostring(berr) .. "）。")
-        return
+        return nil, "读不出本机这本书的对应章节（" .. tostring(berr) .. "）", "error"
     end
 
-    local hash, oerr = Moon.offset_from_tagged(tagged, pos.p_index, pos.text_offset)
+    local hash, oerr, okind = Moon.offset_from_tagged(tagged, pos.p_index, pos.text_offset)
     if not hash then
-        show("墨桥：无法换算当前阅读位置（" .. tostring(oerr) .. "）。")
-        return
+        return nil, "当前页首不在正文段落内（" .. tostring(oerr) .. "）",
+                    (okind == "nop") and "skip" or "error"
     end
 
     -- 写入前自检:让 KOReader 自己把该位置的文字报一遍,与我们从章节 HTML 里取的对一对。
@@ -472,10 +512,8 @@ function Moonsync.push_to_moon(plugin)
             local idx, off = Moon.locate(texts, hash)
             local probe = idx and Moon.compact(Moon.utf8_sub(texts[idx], off + 1, 8)) or ""
             if probe ~= "" and not Moon.compact(here):find(probe, 1, true) then
-                show("墨桥：写入前自检未通过。\n"
-                    .. "本机该位置读到的文字与章节正文对不上，"
-                    .. "为免写坏手机上的真实进度，已取消。\nxpointer：" .. tostring(xp))
-                return
+                return nil, "写入前自检未通过 —— 本机该位置读到的文字与章节正文对不上"
+                    .. "（两台设备上的书可能不是同一个版本）", "error"
             end
             checked = "已通过"
         end
@@ -486,10 +524,8 @@ function Moonsync.push_to_moon(plugin)
     local old = old_body and Moon.parse(old_body) or nil
     local book_ref = (old and old.book_ref) or Moonsync.get_book_ref()
     if not book_ref then
-        show("墨桥：云端还没有这本书的进度文件，无法得知账号级常量。\n"
-            .. "请先在静读天下里同步一次任意一本书（或先用「从静读天下读取进度」成功一次），"
-            .. "再回来写回。")
-        return
+        return nil, "云端还没有这本书的进度文件，无法得知账号级常量"
+            .. "（请先在静读天下里同步一次任意一本书）", "error"
     end
     Moonsync.learn_book_ref(book_ref)
     local at = old and old.at or 0
@@ -507,25 +543,63 @@ function Moonsync.push_to_moon(plugin)
     end
 
     local filename = Moon.po_filename(doc.file)
-    local url = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
-    local new_body = Moon.format(book_ref, pos.section, hash, pct, at)
+    return {
+        url         = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename),
+        body        = Moon.format(book_ref, pos.section, hash, pct, at),
+        old_body    = old_body,
+        old_line    = old_body and (old_body:gsub("[\r\n]+$", "")) or nil,
+        filename    = filename,
+        section     = pos.section,
+        hash        = hash,
+        p_index     = pos.p_index,
+        text_offset = pos.text_offset,
+        checked     = checked,
+        pct_note    = pct_note,
+    }
+end
+
+-- 顺手写回:上传进度成功后调用。返回一句话给调用方拼进它自己的提示;
+-- 返回 nil 表示"这次不适用",连提示都不必加。**不抛异常、不影响上传结果**。
+function Moonsync.auto_push(plugin)
+    if not Moonsync.auto_enabled() then return nil end
+
+    local ok, job, err, kind = pcall(Moonsync.build_push_job, plugin)
+    if not ok then
+        return "静读天下未同步（内部错误：" .. tostring(job) .. "）"
+    end
+    if not job then
+        if kind == "skip" then return nil end
+        return "静读天下未同步（" .. tostring(err) .. "）"
+    end
+
+    local _, brief = Moonsync._do_push(plugin, job, { silent = true })
+    return brief
+end
+
+-- 菜单动作(手动):算完先让用户看清"会覆盖什么",确认后才写。
+function Moonsync.push_to_moon(plugin)
+    local job, err = Moonsync.build_push_job(plugin)
+    if not job then
+        show("墨桥：无法写入静读天下 —— " .. tostring(err) .. "。")
+        return
+    end
 
     local lines = {
         "把本机阅读位置写给静读天下？",
         "",
         string.format("本机位置：DocFragment[%d] 第 %d 个 <p>，段内第 %d 字",
-                      pos.section + 1, pos.p_index, pos.text_offset),
-        string.format("换算结果：章内偏移 %d", hash),
-        "写入内容：" .. new_body,
-        "进度百分比：" .. pct_note,
-        "写入前自检：" .. checked,
+                      job.section + 1, job.p_index, job.text_offset),
+        string.format("换算结果：章内偏移 %d", job.hash),
+        "写入内容：" .. job.body,
+        "进度百分比：" .. job.pct_note,
+        "写入前自检：" .. job.checked,
     }
-    if old_body then
-        table.insert(lines, "云端原值：" .. (old_body:gsub("[\r\n]+$", "")) .. "（将被覆盖）")
+    if job.old_line then
+        table.insert(lines, "云端原值：" .. job.old_line .. "（将被覆盖）")
     else
         table.insert(lines, "云端原本没有这本书的文件（将新建）")
     end
-    table.insert(lines, "文件名：" .. tostring(filename))
+    table.insert(lines, "文件名：" .. tostring(job.filename))
     table.insert(lines, "")
     table.insert(lines, "这会覆盖静读天下里这本书的进度；写入前会自动备份原值。")
 
@@ -533,12 +607,7 @@ function Moonsync.push_to_moon(plugin)
         text = table.concat(lines, "\n"),
         ok_text = "写入",
         cancel_text = "取消",
-        ok_callback = function()
-            Moonsync._do_push(plugin, {
-                url = url, body = new_body, old_body = old_body,
-                filename = filename, section = pos.section, hash = hash,
-            })
-        end,
+        ok_callback = function() Moonsync._do_push(plugin, job) end,
     })
 end
 
