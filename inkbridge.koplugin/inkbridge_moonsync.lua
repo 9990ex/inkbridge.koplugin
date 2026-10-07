@@ -24,6 +24,7 @@
 
 local Moon        = require("inkbridge_moon")
 local WebDAV      = require("inkbridge_webdav")
+local ConfirmBox  = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager   = require("ui/uimanager")
 
@@ -98,21 +99,9 @@ function Moonsync.fetch_po(plugin)
     return body
 end
 
--- 打开 EPUB 取第 section_index(0 基)个正文章节的**块级文本数组**。
--- 返回数组而不是整段字符串,是因为"可搜索片段"必须落在单一段落内(见 Moon.snippet_in_blocks)。
--- 失败返回 nil + 原因;调用方据此提示用户,绝不乱跳。
-function Moonsync.section_blocks(epub_path, section_index)
-    local ok_req, Archiver = pcall(require, "ffi/archiver")
-    if not ok_req or type(Archiver) ~= "table" or not Archiver.Reader then
-        return nil, "本机没有归档模块,读不了 EPUB"
-    end
-
-    local arc = Archiver.Reader:new()
-    local ok_open, opened = pcall(function() return arc:open(epub_path) end)
-    if not ok_open or not opened then return nil, "打不开 EPUB 文件" end
-
-    local function close() pcall(function() arc:close() end) end
-
+-- 从已打开的归档里解析出 (spine 正文章节表, opf 所在目录)。调用方负责关闭归档。
+-- 单独抽出来是因为**两个方向都要用**:读取只要一章,写回算 `:%` 要遍历全书。
+local function spine_of(arc)
     local opf_key
     pcall(function()
         for entry in arc:iterate() do
@@ -120,10 +109,10 @@ function Moonsync.section_blocks(epub_path, section_index)
             if p and not opf_key and p:lower():sub(-4) == ".opf" then opf_key = p end
         end
     end)
-    if not opf_key then close(); return nil, "EPUB 里没有 .opf" end
+    if not opf_key then return nil, nil, "EPUB 里没有 .opf" end
 
     local ok_read, opf = pcall(function() return arc:extractToMemory(opf_key) end)
-    if not ok_read or type(opf) ~= "string" then close(); return nil, "读不出 .opf" end
+    if not ok_read or type(opf) ~= "string" then return nil, nil, "读不出 .opf" end
 
     -- manifest: id → href   注意两点:
     --   * "<item%s" 不会匹配到 <itemref(要求 "item" 后面跟空白);
@@ -149,6 +138,34 @@ function Moonsync.section_blocks(epub_path, section_index)
         end
     end
     local spine = #spine_html > 0 and spine_html or spine_all
+    local base = opf_key:match("^(.*)/[^/]*$")
+    return spine, (base and base ~= "") and base or "", nil
+end
+
+-- 打开归档读某个条目;rar/zip 内部的路径可能是 "OEBPS/Text/x.xhtml" 也可能已是完整路径。
+local function extract_any(arc, key, href)
+    local data
+    pcall(function() data = arc:extractToMemory(key) end)
+    if type(data) ~= "string" and href and href ~= key then
+        pcall(function() data = arc:extractToMemory(href) end)
+    end
+    return data
+end
+
+-- 读第 section_index(0 基)章的**原始 HTML**。
+function Moonsync.section_html(epub_path, section_index)
+    local ok_req, Archiver = pcall(require, "ffi/archiver")
+    if not ok_req or type(Archiver) ~= "table" or not Archiver.Reader then
+        return nil, "本机没有归档模块,读不了 EPUB"
+    end
+
+    local arc = Archiver.Reader:new()
+    local ok_open, opened = pcall(function() return arc:open(epub_path) end)
+    if not ok_open or not opened then return nil, "打不开 EPUB 文件" end
+    local function close() pcall(function() arc:close() end) end
+
+    local spine, base, err = spine_of(arc)
+    if not spine then close(); return nil, err end
 
     local href = spine[section_index + 1]
     if not href then
@@ -157,16 +174,77 @@ function Moonsync.section_blocks(epub_path, section_index)
                                   section_index, #spine)
     end
 
-    local base = opf_key:match("^(.*)/[^/]*$")
-    local key  = (base and base ~= "") and (base .. "/" .. href) or href
-    local html
-    pcall(function() html = arc:extractToMemory(key) end)
-    if type(html) ~= "string" then
-        pcall(function() html = arc:extractToMemory(href) end)     -- 有的书 href 已是完整路径
-    end
+    local key = (base ~= "") and (base .. "/" .. href) or href
+    local html = extract_any(arc, key, href)
     close()
     if type(html) ~= "string" then return nil, "读不出该章节内容" end
+    return html
+end
+
+-- 读取方向:只要块级文本数组(与既有行为一致)。
+function Moonsync.section_blocks(epub_path, section_index)
+    local html, err = Moonsync.section_html(epub_path, section_index)
+    if not html then return nil, err end
     return Moon.blocks_from_html(html)
+end
+
+-- 写回方向:要保留标签名,才能把 KOReader 的 `p[N]` 换算成章内字符偏移。
+function Moonsync.section_blocks_tagged(epub_path, section_index)
+    local html, err = Moonsync.section_html(epub_path, section_index)
+    if not html then return nil, err end
+    return Moon.blocks_tagged_from_html(html)
+end
+
+-- 全书字数与各章起始偏移 —— 写回时 `:%` 需要"整本书百分比"。
+--
+-- 这是一次**全量遍历**(1222 章的书约几秒),所以结果按书缓存进 G_reader_settings,
+-- 之后读写都即刻命中。缓存键带上文件大小与修改时间,书换了就自动失效。
+function Moonsync.book_metrics(epub_path)
+    local stamp = ""
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok_lfs and lfs and type(lfs.attributes) == "function" then
+        local ok_a, attr = pcall(lfs.attributes, epub_path)
+        if ok_a and type(attr) == "table" then
+            stamp = string.format("|%s|%s", tostring(attr.size), tostring(attr.modification))
+        end
+    end
+    local cache_key = "inkbridge_moon_metrics:" .. tostring(epub_path) .. stamp
+    if G_reader_settings then
+        local cached = G_reader_settings:readSetting(cache_key)
+        if type(cached) == "table" and type(cached.total) == "number"
+                and type(cached.starts) == "table" and cached.total > 0 then
+            return cached, true
+        end
+    end
+
+    local ok_req, Archiver = pcall(require, "ffi/archiver")
+    if not ok_req or type(Archiver) ~= "table" or not Archiver.Reader then return nil end
+    local arc = Archiver.Reader:new()
+    local ok_open, opened = pcall(function() return arc:open(epub_path) end)
+    if not ok_open or not opened then return nil end
+    local function close() pcall(function() arc:close() end) end
+
+    local spine, base, err = spine_of(arc)
+    if not spine then close(); return nil, err end
+
+    local starts, total = {}, 0
+    for i = 1, #spine do
+        starts[i] = total
+        local href = spine[i]
+        local key = (base ~= "") and (base .. "/" .. href) or href
+        local html = extract_any(arc, key, href)
+        if type(html) == "string" then
+            local blocks = Moon.blocks_from_html(html)
+            for j = 1, #blocks do total = total + Moon.utf8_len(blocks[j]) end
+        end
+    end
+    starts[#spine + 1] = total
+    close()
+    if total <= 0 then return nil, "全书字数为 0，读不出正文" end
+
+    local metrics = { total = total, starts = starts }
+    if G_reader_settings then G_reader_settings:saveSetting(cache_key, metrics) end
+    return metrics, false
 end
 
 -- 主流程:取回 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
@@ -217,6 +295,250 @@ function Moonsync.import_from_moon(plugin)
     if not ok_jump then
         show("墨桥：跳转失败（" .. tostring(jerr) .. "）。")
     end
+end
+
+-- ── 反向写回:KOReader → 静读天下 ──────────────────────────────────────────
+--
+-- 与读取方向相反,这里会**覆盖**静读天下里这本书的真实进度,所以规矩更严:
+--   1) 换算不出位置就报错,绝不"猜一个";
+--   2) 覆盖前用 KOReader 自己报回的文字做一次自检;
+--   3) 覆盖前把云端原值备份到本地插件目录;
+--   4) 写完回读校验,确认云端真的是我们写下去的那一行。
+
+-- 首个常量是**账号级**的,由静读天下自己写入,我们只能照抄。
+-- 先在任意一本书上成功同步/读取一次把它记下来,之后连"静读天下从没打开过的书"也能写。
+Moonsync.REF_SETTING = "inkbridge_moon_book_ref"
+Moonsync.BACKUP_SUBDIR = "moon_backup"
+
+function Moonsync.get_book_ref()
+    if not G_reader_settings then return nil end
+    local v = G_reader_settings:readSetting(Moonsync.REF_SETTING)
+    return (type(v) == "string" and v ~= "") and v or nil
+end
+
+function Moonsync.learn_book_ref(book_ref)
+    if G_reader_settings and type(book_ref) == "string" and book_ref ~= "" then
+        G_reader_settings:saveSetting(Moonsync.REF_SETTING, book_ref)
+    end
+end
+
+-- 发一个 WebDAV 请求(method 为 "GET" 或 "PUT")。
+-- 成功 → 状态码, 状态文本, 响应体, nil
+-- 传输层失败 → nil, nil, nil, 原因          (不抛异常)
+function Moonsync.request(server, url, method, body)
+    local ok_http, http       = pcall(require, "socket.http")
+    local ok_sock, socket     = pcall(require, "socket")
+    local ok_ltn12, ltn12     = pcall(require, "ltn12")
+    local ok_util, socketutil = pcall(require, "socketutil")
+    if not (ok_http and ok_sock and ok_ltn12) then return nil, nil, nil, "本机缺少网络模块" end
+
+    local sink = {}
+    local req = {
+        url      = url,
+        method   = method,
+        user     = server.username,
+        password = server.password,
+    }
+    if method == "GET" then
+        req.sink = ltn12.sink.table(sink)
+    else
+        req.source  = ltn12.source.string(body or "")
+        -- 显式给长度:luasocket 对字符串 source 不一定会自己补,
+        -- 而 WebDAV 的 PUT 少了 Content-Length 会被服务器拒。
+        req.headers = {
+            ["Content-Type"]   = "text/plain; charset=utf-8",
+            ["Content-Length"] = tostring(#(body or "")),
+        }
+    end
+
+    if ok_util and socketutil then
+        socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+    end
+    local ok, code, _, status = pcall(function()
+        return socket.skip(1, http.request(req))
+    end)
+    if ok_util and socketutil then socketutil:reset_timeout() end
+    if not ok then return nil, nil, nil, tostring(code) end
+
+    return tonumber(code), tostring(status or ""),
+           (method == "GET") and table.concat(sink) or "", nil
+end
+
+-- 把云端原值备份到插件目录(本地,不往云端多写文件)。
+function Moonsync.backup_po(plugin, filename, old_body)
+    local base = plugin and plugin.path
+    if type(base) ~= "string" or base == "" then return nil, "拿不到插件目录" end
+    if type(old_body) ~= "string" or old_body == "" then return nil, "没有可备份的内容" end
+
+    local dir = base .. "/" .. Moonsync.BACKUP_SUBDIR
+    local ok_util, util = pcall(require, "ffi/util")
+    if ok_util and util and type(util.makePath) == "function" then
+        pcall(util.makePath, dir)
+    else
+        local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+        if ok_lfs and lfs then pcall(lfs.mkdir, dir) end
+    end
+
+    local path = string.format("%s/%s.%s.bak", dir, filename, os.date("%Y%m%d-%H%M%S"))
+    local f = io.open(path, "wb")
+    if not f then return nil, "写不进备份文件" end
+    f:write(old_body)
+    f:close()
+    return path
+end
+
+-- 真正执行:备份 → PUT → 回读校验。
+function Moonsync._do_push(plugin, job)
+    local server = plugin.server
+
+    local backup_path, berr
+    if job.old_body then
+        backup_path, berr = Moonsync.backup_po(plugin, job.filename, job.old_body)
+    end
+    local tail = backup_path and ("\n备份：" .. backup_path) or ""
+
+    local code, status, _, err = Moonsync.request(server, job.url, "PUT", job.body)
+    if not code then
+        show("墨桥：写入失败（" .. tostring(err) .. "）。\n云端内容未被改动。" .. tail)
+        return
+    end
+    if code < 200 or code > 299 then
+        show(string.format("墨桥：写入失败，服务器返回 %s（%s）。\n云端内容未被改动。%s",
+            tostring(code), tostring(status), tail))
+        return
+    end
+
+    local back, _, body = Moonsync.request(server, job.url, "GET")
+    local verdict
+    if type(body) == "string" then
+        body = body:gsub("[\r\n]+$", "")
+        verdict = (body == job.body) and "回读校验：一致 ✓"
+                                          or ("回读校验：**不一致**，云端现在是 " .. body)
+    else
+        verdict = "回读校验：取不回来"
+    end
+
+    show(string.format("墨桥：已写入静读天下。\n第 %d 章，章内偏移 %d\n%s\n内容：%s%s",
+        job.section, job.hash, verdict, job.body, tail))
+end
+
+-- 主流程(反向):取本机位置 → 换算 → 自检 → 让用户确认 → 备份并覆盖云端 .po
+function Moonsync.push_to_moon(plugin)
+    local doc = plugin and plugin.ui and plugin.ui.document
+    if not doc or type(doc.file) ~= "string" then
+        show("墨桥：当前没有打开的书。")
+        return
+    end
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then
+        show("墨桥：还没有设置 WebDAV 目标。")
+        return
+    end
+    if type(doc.getXPointer) ~= "function" then
+        show("墨桥：这本书取不到阅读位置，暂时只能单向读取。")
+        return
+    end
+
+    local xp = doc:getXPointer()
+    local pos, perr = Moon.parse_xpointer(xp)
+    if not pos then
+        show("墨桥：读不出当前阅读位置（" .. tostring(perr) .. "）。")
+        return
+    end
+
+    local tagged, berr = Moonsync.section_blocks_tagged(doc.file, pos.section)
+    if not tagged then
+        show("墨桥：读不出本机这本书的对应章节（" .. tostring(berr) .. "）。")
+        return
+    end
+
+    local hash, oerr = Moon.offset_from_tagged(tagged, pos.p_index, pos.text_offset)
+    if not hash then
+        show("墨桥：无法换算当前阅读位置（" .. tostring(oerr) .. "）。")
+        return
+    end
+
+    -- 写入前自检:让 KOReader 自己把该位置的文字报一遍,与我们从章节 HTML 里取的对一对。
+    -- 这是唯一能在覆盖之前发现"两台设备上的书版本不一致"的机会。
+    local checked = "未做（本机没提供该接口）"
+    if type(doc.getTextFromXPointer) == "function" then
+        local ok_txt, here = pcall(doc.getTextFromXPointer, doc, xp)
+        if ok_txt and type(here) == "string" and here ~= "" then
+            local texts = {}
+            for i, b in ipairs(tagged) do texts[i] = b.text end
+            -- 探针**只向后取**:向前借字会让探针起点早于 xpointer,
+            -- 而 KOReader 报回的文字是从 xpointer 处开始的,那样必然误判。
+            local idx, off = Moon.locate(texts, hash)
+            local probe = idx and Moon.compact(Moon.utf8_sub(texts[idx], off + 1, 8)) or ""
+            if probe ~= "" and not Moon.compact(here):find(probe, 1, true) then
+                show("墨桥：写入前自检未通过。\n"
+                    .. "本机该位置读到的文字与章节正文对不上，"
+                    .. "为免写坏手机上的真实进度，已取消。\nxpointer：" .. tostring(xp))
+                return
+            end
+            checked = "已通过"
+        end
+    end
+
+    -- 云端现有内容:沿用账号级常量与 @,并作为备份来源
+    local old_body = Moonsync.fetch_po(plugin)
+    local old = old_body and Moon.parse(old_body) or nil
+    local book_ref = (old and old.book_ref) or Moonsync.get_book_ref()
+    if not book_ref then
+        show("墨桥：云端还没有这本书的进度文件，无法得知账号级常量。\n"
+            .. "请先在静读天下里同步一次任意一本书（或先用「从静读天下读取进度」成功一次），"
+            .. "再回来写回。")
+        return
+    end
+    Moonsync.learn_book_ref(book_ref)
+    local at = old and old.at or 0
+
+    -- `:%` 是静读天下自己排版下的百分比,精确值算不出来。这里用"全书字符数"算一个
+    -- 与排版无关的近似值(实测只改它不影响落点),算不出来就沿用云端旧值并如实标注。
+    local pct, pct_note
+    local metrics = Moonsync.book_metrics(doc.file)
+    if metrics and type(metrics.starts) == "table" and metrics.starts[pos.section + 1] then
+        pct = (metrics.starts[pos.section + 1] + hash) / metrics.total * 100
+        pct_note = string.format("%.2f%%（按全书字符数算）", pct)
+    else
+        pct = old and old.pct or 0
+        pct_note = string.format("%s%%（沿用云端旧值）", tostring(pct))
+    end
+
+    local filename = Moon.po_filename(doc.file)
+    local url = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
+    local new_body = Moon.format(book_ref, pos.section, hash, pct, at)
+
+    local lines = {
+        "把本机阅读位置写给静读天下？",
+        "",
+        string.format("本机位置：DocFragment[%d] 第 %d 个 <p>，段内第 %d 字",
+                      pos.section + 1, pos.p_index, pos.text_offset),
+        string.format("换算结果：章内偏移 %d", hash),
+        "写入内容：" .. new_body,
+        "进度百分比：" .. pct_note,
+        "写入前自检：" .. checked,
+    }
+    if old_body then
+        table.insert(lines, "云端原值：" .. (old_body:gsub("[\r\n]+$", "")) .. "（将被覆盖）")
+    else
+        table.insert(lines, "云端原本没有这本书的文件（将新建）")
+    end
+    table.insert(lines, "文件名：" .. tostring(filename))
+    table.insert(lines, "")
+    table.insert(lines, "这会覆盖静读天下里这本书的进度；写入前会自动备份原值。")
+
+    UIManager:show(ConfirmBox:new{
+        text = table.concat(lines, "\n"),
+        ok_text = "写入",
+        cancel_text = "取消",
+        ok_callback = function()
+            Moonsync._do_push(plugin, {
+                url = url, body = new_body, old_body = old_body,
+                filename = filename, section = pos.section, hash = hash,
+            })
+        end,
+    })
 end
 
 return Moonsync

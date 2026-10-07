@@ -313,6 +313,7 @@ function InkBridge:addToMainMenu(menu_items)
                 { text = "上传当前阅读进度", callback = function() self:upload_current() end },
                 { text = "下载并检查阅读进度", callback = function() self:download_current() end },
                 { text = "从静读天下读取进度", callback = function() Moonsync.import_from_moon(self) end },
+                { text = "把本机进度写入静读天下", callback = function() Moonsync.push_to_moon(self) end },
                 { text = "设置静读天下同步目录", callback = function() self:set_moon_dir() end },
             }
         end,
@@ -326,6 +327,7 @@ function InkBridge:deletePluginSettings()
     G_reader_settings:delSetting("inkbridge_device_label")
     G_reader_settings:delSetting("inkbridge_webdav_server")
     G_reader_settings:delSetting("inkbridge_moon_dir")
+    G_reader_settings:delSetting("inkbridge_moon_book_ref")
 end
 
 return InkBridge

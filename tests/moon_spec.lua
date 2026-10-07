@@ -218,5 +218,120 @@ do
     eq("空块列表要拒绝", Moon.snippet_in_blocks({}, 0, 20), nil)
 end
 
+-- ── 反向:xpointer → (章节序号, 段序, 段内偏移) ───────────────────────────
+print("== xpointer 解析(写回方向) ==")
+do
+    local p = Moon.parse_xpointer("/body/DocFragment[1147]/body/p[8]/text().30")
+    check("完整路径可解析", p ~= nil)
+    if p then
+        eq("  section = DocFragment - 1", p.section, 1146)
+        eq("  p_index", p.p_index, 8)
+        eq("  text_offset", p.text_offset, 30)
+    end
+
+    local q = Moon.parse_xpointer("DocFragment[1] p[1] text().0")
+    check("缩写形可解析", q ~= nil)
+    if q then
+        eq("  缩写形 section", q.section, 0)
+        eq("  缩写形 p_index", q.p_index, 1)
+        eq("  缩写形 text_offset", q.text_offset, 0)
+    end
+
+    -- 嵌套路径要取**最后一个** p[N](最靠近 text() 的那个才是目标)
+    local r = Moon.parse_xpointer("/body/DocFragment[5]/body/div[2]/p[3]/p[9]/text().7")
+    check("嵌套路径可解析", r ~= nil and r.p_index == 9, r and r.p_index)
+
+    -- 没有 text() → 视为该段开头
+    local s = Moon.parse_xpointer("/body/DocFragment[5]/body/p[2]")
+    check("没有 text() 也能解析", s ~= nil)
+    if s then
+        eq("  text_offset 记 0", s.text_offset, 0)
+        eq("  p_index 仍在", s.p_index, 2)
+    end
+
+    -- 停在标题上:没有 p[]
+    local u = Moon.parse_xpointer("/body/DocFragment[5]/body/h2/text().3")
+    check("标题位置可解析", u ~= nil and u.p_index == 0)
+
+    eq("空串要拒绝", Moon.parse_xpointer(""), nil)
+    eq("nil 要拒绝", Moon.parse_xpointer(nil), nil)
+    eq("没有 DocFragment 要拒绝", Moon.parse_xpointer("/body/div/p[1]/text().0"), nil)
+    eq("空串不能靠 p[] 蒙混过关", Moon.parse_xpointer("p[3]/text().1"), nil)
+end
+
+-- ── 反向:(第几个 <p>, 段内偏移) → 章内偏移 ───────────────────────────────
+print("== 反向换算:(第几个 <p>, 段内偏移) → 章内偏移 ==")
+do
+    -- 真机样本 chapter7_66:`.po` 的 `*1146 #458` 落在该章**第 8 个 <p> 的第 30 字**。
+    -- 该章第 1 块是章标题(非 <p>),前 8 块累计 428 字,428 + 30 = 458 —— 与 .po 完全一致。
+    -- 这里用同构的小样验证同一套算术(真机数据见 墨桥-samples/po-locate.py 的输出)。
+    local tagged = {
+        { tag = "h1", text = "第一章" },        -- 3 字,不计入 <p>
+        { tag = "p",  text = "一二三四五" },    -- 5 字,第 1 个 <p>
+        { tag = "p",  text = "六七八九十" },    -- 5 字,第 2 个 <p>
+    }
+    eq("第 1 个 <p> 段内 0 → 3",  Moon.offset_from_tagged(tagged, 1, 0), 3)
+    eq("第 1 个 <p> 段内 2 → 5",  Moon.offset_from_tagged(tagged, 1, 2), 5)
+    eq("第 2 个 <p> 段内 0 → 8",  Moon.offset_from_tagged(tagged, 2, 0), 8)
+    eq("第 2 个 <p> 段尾 5 → 13", Moon.offset_from_tagged(tagged, 2, 5), 13)
+    eq("段内偏移越界要拒绝",     Moon.offset_from_tagged(tagged, 2, 6), nil)
+    eq("p_index 超出本章要拒绝", Moon.offset_from_tagged(tagged, 9, 0), nil)
+    eq("p_index = 0 要拒绝",     Moon.offset_from_tagged(tagged, 0, 0), nil)
+    eq("空块表要拒绝",           Moon.offset_from_tagged({}, 1, 0), nil)
+    eq("非表要拒绝",             Moon.offset_from_tagged(nil, 1, 0), nil)
+
+    -- 非 <p> 的块(标题/div)也必须计入偏移 —— 否则整章会错位
+    local with_div = {
+        { tag = "div", text = "前置内容" },     -- 4 字
+        { tag = "p",   text = "甲乙丙" },       -- 3 字,第 1 个 <p>
+    }
+    eq("前面的 div 计入累计", Moon.offset_from_tagged(with_div, 1, 0), 4)
+end
+
+-- ── 分块:保留标签 ─────────────────────────────────────────────────────────
+print("== 分块(保留标签,写回要数第几个 <p>) ==")
+do
+    local html = '<body><div><div class="logo"><img src="x.png"/></div>'
+        .. '<h2>第595章比气</h2><p>第一段文字。</p>'
+        .. '<p>第二段：龙王给出个说法，如果真有冒充者。</p></div></body>'
+    local t = Moon.blocks_tagged_from_html(html)
+    eq("块数", #t, 3)
+    eq("第 1 块标签", t[1].tag, "h2")
+    eq("第 2 块标签", t[2].tag, "p")
+    eq("第 3 块标签", t[3].tag, "p")
+    eq("第 1 块文本", t[1].text, "第595章比气")
+    -- 两个版本必须逐字一致,否则读写两个方向会错位
+    eq("带标签版与纯文本版一致",
+       table.concat({ t[1].text, t[2].text, t[3].text }),
+       table.concat(Moon.blocks_from_html(html)))
+end
+
+-- ── 写回整行 ───────────────────────────────────────────────────────────────
+print("== 生成整行(写回静读天下) ==")
+do
+    local line = Moon.format("1785683827794", 1146, 458, 93.8032, 0)
+    eq("生成的内容", line, "1785683827794*1146@0#458:93.8%")
+    local back = Moon.parse(line)
+    check("生成的内容能被自己解析回来", back ~= nil)
+    if back then
+        eq("  回读 book_ref", back.book_ref, "1785683827794")
+        eq("  回读 star", back.star, 1146)
+        eq("  回读 hash", back.hash, 458)
+    end
+    eq("整数百分比不留小数位", Moon.format("1", 2, 3, 94, 0), "1*2@0#3:94%")
+    eq("@ 字段必须原样透传", Moon.format("1", 2, 3, 50, 7), "1*2@7#3:50%")
+
+    -- 读写闭环:真机那两个偏移量来回一趟必须不变
+    for _, case in ipairs({ { 1146, 458 }, { 1144, 2821 }, { 600, 811 } }) do
+        local l = Moon.format("1785683827794", case[1], case[2], 50, 0)
+        local r = Moon.parse(l)
+        check(string.format("闭环 *%d #%d", case[1], case[2]),
+              r ~= nil and r.star == case[1] and r.hash == case[2])
+    end
+
+    eq("compact 去掉所有空白", Moon.compact(" 甲\n乙\t丙 "), "甲乙丙")
+    eq("compact 容忍 nil", Moon.compact(nil), "")
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)

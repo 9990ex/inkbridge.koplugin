@@ -15,7 +15,7 @@
 set -u
 
 LUAJIT="${LUAJIT:-luajit}"
-SPECS="tests/moon_spec.lua tests/webdav_spec.lua tests/main_spec.lua tests/state_spec.lua"
+SPECS="tests/moon_spec.lua tests/moonsync_spec.lua tests/webdav_spec.lua tests/main_spec.lua tests/state_spec.lua"
 
 fail=0
 for spec in $SPECS; do

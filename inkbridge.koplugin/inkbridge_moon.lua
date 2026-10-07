@@ -221,7 +221,7 @@ local BLOCK_TAGS = {
 -- 这里用**手写扫描**而不是模式里的选择分支 —— Lua 模式没有 `|`,无法一次匹配多种标签。
 -- 做法是:找到每个开标签,再找它**第一个**同名的闭合标签,取出其中文字,然后从闭合标签之后继续。
 -- 外层 div 因此只吞到它自己的第一个 </div>(通常是那张空的 logo 图),不会重复计算内层文字。
-function Moon.blocks_from_html(html)
+function Moon.blocks_tagged_from_html(html)
     local blocks = {}
     local pos, len = 1, #html
     while pos <= len do
@@ -232,7 +232,7 @@ function Moon.blocks_from_html(html)
             local close_s, close_e = html:find("</" .. name .. ">", e + 1, true)  -- 纯文本查找
             if close_s then
                 local text = Moon.plain_text(html:sub(e + 1, close_s - 1))
-                if text ~= "" then blocks[#blocks + 1] = text end
+                if text ~= "" then blocks[#blocks + 1] = { tag = name, text = text } end
                 pos = close_e + 1
             else
                 pos = e + 1          -- 没有闭合标签:跳过这个开标签
@@ -242,6 +242,13 @@ function Moon.blocks_from_html(html)
         end
     end
     return blocks
+end
+
+-- 只要文本的版本(读取方向用)。与 blocks_tagged_from_html 同源,保证两个方向口径一致。
+function Moon.blocks_from_html(html)
+    local out = {}
+    for i, b in ipairs(Moon.blocks_tagged_from_html(html)) do out[i] = b.text end
+    return out
 end
 
 -- 取出该章内偏移处的一小段文字,用于在 KOReader 里全文搜索定位。
@@ -268,6 +275,72 @@ function Moon.snippet_in_blocks(blocks, offset, want)
     end
     if take < 6 then return nil end
     return Moon.utf8_sub(text, start + 1, take)
+end
+
+-- ── 反向:KOReader xpointer → 静读天下的 (章节序号, 章内偏移) ──────────────
+
+-- 只保留非空白字符。用于把 KOReader 报回来的文字与本章正文对齐自检。
+function Moon.compact(s)
+    return (tostring(s or ""):gsub("%s+", ""))
+end
+
+-- 解析 crengine 的 xpointer,取出写回需要的三样东西。
+--
+--   完整形 `/body/DocFragment[1147]/body/p[8]/text().30`
+--   缩写形 `DocFragment[1147] p[8] text().30`
+--
+--   section     = DocFragment 序号 − 1(静读天下的 `*` 是 0 基)
+--   p_index     = **最后一个** p[N] 的下标(嵌套时最靠近 text() 的才是目标);
+--                 0 表示这个位置不在任何 <p> 里(例如标题里的字)
+--   text_offset = 该文本节点内的字符偏移
+--
+-- 返回表 或 nil + 原因。
+function Moon.parse_xpointer(xp)
+    if type(xp) ~= "string" or xp == "" then return nil, "没有 xpointer" end
+    local frag = xp:match("DocFragment%[(%d+)%]")
+    if not frag then return nil, "xpointer 里没有 DocFragment" end
+
+    local p_index = 0
+    for k in xp:gmatch("p%[(%d+)%]") do p_index = tonumber(k) end
+
+    local m = xp:match("text%(%)%.(%d+)")
+    return {
+        section     = tonumber(frag) - 1,
+        p_index     = p_index,
+        text_offset = tonumber(m or 0),
+    }
+end
+
+-- (第几个 <p>, 段内偏移) → 章内字符偏移。
+--
+-- 累加口径与读取方向**完全一致**:按文档顺序累加所有块级文本(不只是 <p>),
+-- 块内按字符数(不是字节)。这样写回去的 `#` 与读回来的 `#` 落在同一个字上。
+--
+-- 返回偏移 或 nil + 原因 —— 对不上时宁可报错,也不写一个错位置覆盖用户进度。
+function Moon.offset_from_tagged(tagged, p_index, text_offset)
+    if type(tagged) ~= "table" or #tagged == 0 then return nil, "本章没有正文块" end
+    if type(p_index) ~= "number" or p_index <= 0 then
+        return nil, "xpointer 没有指向任何 <p>（可能停在标题或图片上）"
+    end
+    text_offset = tonumber(text_offset) or 0
+
+    local acc, seen = 0, 0
+    for i = 1, #tagged do
+        local b = tagged[i]
+        if b.tag == "p" then
+            seen = seen + 1
+            if seen == p_index then
+                local n = Moon.utf8_len(b.text)
+                if text_offset > n then
+                    return nil, string.format("段内偏移 %d 超出该段长度 %d（两端版本可能不同）",
+                                              text_offset, n)
+                end
+                return acc + text_offset
+            end
+        end
+        acc = acc + Moon.utf8_len(b.text)
+    end
+    return nil, string.format("本章只有 %d 个 <p>，xpointer 指的是第 %d 个", seen, p_index)
 end
 
 return Moon
