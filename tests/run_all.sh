@@ -5,8 +5,9 @@
 # 而当时的检查只看有没有『合计』这一行、崩了就什么也不打印 —— 于是漏过了一个
 # 已经提交并打包出去的语法错误。所以这里把「没有输出合计」明确判为失败。
 #
-# 只用 shell 内建(read/case),不依赖 grep/sed/tail/head:
-# 第一次写的时候用了它们,而调用时的 PATH 里没有这些命令,结果四份测试全被误判成崩溃。
+# 只用 shell 内建(read/case),不依赖 grep/sed/tail/head。
+# 判定用**退出码**(各 spec 失败时会 os.exit(1)),不靠匹配中文百分比字串 ——
+# 那样写过的版本因为模式里含全角逗号与空格,被 shell 拆词,自己就语法错误了。
 #
 # 用法(仓库根目录):
 #   sh tests/run_all.sh
@@ -19,7 +20,9 @@ SPECS="tests/moon_spec.lua tests/webdav_spec.lua tests/main_spec.lua tests/state
 fail=0
 for spec in $SPECS; do
     out="$("$LUAJIT" "$spec" 2>&1)"
+    rc=$?
 
+    # 取最后一行含「合计」的输出,仅用于显示
     summary=""
     while IFS= read -r line; do
         case "$line" in
@@ -40,16 +43,19 @@ EOF
 $out
 EOF
         fail=1
+    elif [ "$rc" -eq 0 ]; then
+        echo "ok                  $spec  $summary"
     else
-        case "$summary" in
-            *，0 失败*)
-                echo "ok                  $spec  $summary"
-                ;;
-            *)
-                echo "FAIL                $spec  $summary"
-                fail=1
-                ;;
-        esac
+        echo "FAIL                $spec  $summary"
+        n=0
+        while IFS= read -r line; do
+            case "$line" in
+                *FAIL*) if [ "$n" -lt 10 ]; then echo "      $line"; n=$((n + 1)); fi ;;
+            esac
+        done <<EOF
+$out
+EOF
+        fail=1
     fi
 done
 
