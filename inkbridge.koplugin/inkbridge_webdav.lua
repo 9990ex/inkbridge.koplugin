@@ -566,13 +566,36 @@ end
 
 -- 远端位置较新时，询问用户是否跳转，并说明本机将用哪种方式定位
 -- （把定位方式显示出来，是为了让“跳得准不准”这件事可诊断）。
-function WebDAV.confirm_jump(plugin, remote)
+-- 真正发出跳转事件。
+-- 阅读器模块通过 ReaderUI:handleEvent 接收跳转事件；直接发给当前 ui
+-- 比广播给所有窗口更可靠，尤其是在确认框关闭后的回调里。
+function WebDAV._do_jump(ui, plan)
+    if plan.method == "xpointer" or plan.method == "text" then
+        ui:handleEvent(Event:new("GotoXPointer", plan.xpointer, plan.xpointer))
+    elseif plan.method == "page" or plan.method == "percent" then
+        ui:handleEvent(Event:new("GotoPage", plan.page))
+    end
+end
+
+function WebDAV.confirm_jump(plugin, remote, opts)
     local ui = plugin.ui
     if not ui or not ui.document then return end
 
     local plan, reason = WebDAV._plan_jump(plugin, remote)
     if not plan then
-        show("墨桥：无法在本机文档上还原远端位置 —— " .. WebDAV.describe_error(reason))
+        -- already_confirmed 时调用方只想要"跳过去",失败也必须说出来
+        if opts and opts.already_confirmed then
+            show("墨桥：无法在本机文档上还原云端位置 —— " .. WebDAV.describe_error(reason))
+        else
+            show("墨桥：无法在本机文档上还原远端位置 —— " .. WebDAV.describe_error(reason))
+        end
+        return
+    end
+
+    -- 调用方已经问过用户了(例如"打开书时自动核对"):直接跳,不再问第二遍。
+    if opts and opts.already_confirmed then
+        WebDAV._do_jump(ui, plan)
+        show("墨桥：已跳转到云端位置。")
         return
     end
 
@@ -624,15 +647,51 @@ function WebDAV.confirm_jump(plugin, remote)
         ok_text = "跳转",
         cancel_text = "留在原处",
         ok_callback = function()
-            -- 阅读器模块通过 ReaderUI:handleEvent 接收跳转事件；直接发给当前 ui
-            -- 比广播给所有窗口更可靠，尤其是在确认框关闭后的回调里。
-            if plan.method == "xpointer" or plan.method == "text" then
-                ui:handleEvent(Event:new("GotoXPointer", plan.xpointer, plan.xpointer))
-            elseif plan.method == "page" or plan.method == "percent" then
-                ui:handleEvent(Event:new("GotoPage", plan.page))
-            end
+            WebDAV._do_jump(ui, plan)
         end,
     })
+end
+
+-- ── 「远端有没有比我新」的判定(纯函数,便于测试)─────────────────────────
+--
+-- 为什么用"服务器时间"而不是记录里的时间戳:
+--   * KOReader 记录里的 updated_at 是**设备本地时钟**,两台机器差几分钟很正常;
+--   * 而列表项自带的 modification 来自服务器(PROPFIND 的 getlastmodified,
+--     provider 已经用 datetime.stringRFC1123ToSeconds 转成 Unix 秒),
+--     静读天下 .po 的 Last-Modified 响应头也是**同一台服务器**给的 ——
+--     两者单位一致、基准一致,可以直接比较。
+
+-- 从候选里挑出"比本机上次看到的更新"的那些,按时间从新到旧。
+--
+--   candidates = { { source = "kpw6", time = 1699999999, ... }, ... }
+--   seen       = { ["kpw6"] = 1699900000, ... }   -- 本机上次同步后记下的时间
+--
+-- **没有 seen 的候选一律跳过**:本机从没同步过这本书时不打扰用户
+-- (第一次同步请用菜单里的「下载阅读进度」)。
+function WebDAV.select_updates(candidates, seen)
+    local out = {}
+    for _, c in ipairs(candidates or {}) do
+        local key = tostring(c and c.source or "")
+        local t   = tonumber(c and c.time)
+        local prev = tonumber(seen and seen[key])
+        if key ~= "" and t and prev and t > prev then
+            out[#out + 1] = c
+        end
+    end
+    table.sort(out, function(a, b) return (tonumber(a.time) or 0) > (tonumber(b.time) or 0) end)
+    return out
+end
+
+-- Unix 秒差 → 人话("刚刚" / "3 分钟前" / "2 小时前" / "3 天前")。
+function WebDAV.human_age(seconds)
+    local s = tonumber(seconds)
+    if not s or s < 0 then return "未知" end
+    if s < 60 then return "刚刚" end
+    local m = math.floor(s / 60)
+    if m < 60 then return tostring(m) .. " 分钟前" end
+    local h = math.floor(m / 60)
+    if h < 24 then return tostring(h) .. " 小时前" end
+    return tostring(math.floor(h / 24)) .. " 天前"
 end
 
 -- 导出为测试钩子（下划线前缀表示非稳定接口，与 Syncery 的写法一致）。

@@ -608,6 +608,45 @@ do
                                               function() end), false)
 end
 
+-- ── 「远端有没有比我新」的判定(服务器时钟,没有跨设备时钟偏差) ──────────
+print("== 远端新旧判定 ==")
+do
+    local cands = {
+        { source = "kpw6",  time = 1000 },
+        { source = "c7t",   time = 900  },
+        { source = "phone", time = 800  },
+    }
+
+    -- 本机从没同步过这个来源 → 不打扰(第一次请用手动下载)
+    eq("完全没有 seen 时不报更新", #WebDAV.select_updates(cands, {}), 0)
+
+    local up = WebDAV.select_updates(cands, { kpw6 = 990, c7t = 950, phone = 800 })
+    eq("只挑出真正更新的那个", #up, 1)
+    eq("挑中的是 kpw6", up[1] and up[1].source, "kpw6")
+
+    up = WebDAV.select_updates(cands, { kpw6 = 990, c7t = 800, phone = 800 })
+    eq("两个更新", #up, 2)
+    eq("新的排前面", up[1] and up[1].source, "kpw6")
+    eq("旧的排后面", up[2] and up[2].source, "c7t")
+
+    eq("时间相同不算更新(避免来回震荡)",
+       #WebDAV.select_updates({ { source = "a", time = 100 } }, { a = 100 }), 0)
+    eq("时间倒退更不算",
+       #WebDAV.select_updates({ { source = "a", time = 99 } }, { a = 100 }), 0)
+
+    eq("空候选不报错", #WebDAV.select_updates(nil, { a = 1 }), 0)
+    eq("坏时间要跳过", #WebDAV.select_updates({ { source = "a", time = "x" } }, { a = 1 }), 0)
+    eq("没有 source 要跳过", #WebDAV.select_updates({ { time = 999 } }, { [""] = 1 }), 0)
+
+    -- 时间说人话
+    eq("刚刚", WebDAV.human_age(5), "刚刚")
+    eq("分钟", WebDAV.human_age(180), "3 分钟前")
+    eq("小时", WebDAV.human_age(3600 * 2), "2 小时前")
+    eq("天", WebDAV.human_age(86400 * 3), "3 天前")
+    eq("负数当未知", WebDAV.human_age(-1), "未知")
+    eq("nil 当未知", WebDAV.human_age(nil), "未知")
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end
 print("全部通过。")

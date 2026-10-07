@@ -12,6 +12,7 @@ local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
 local InfoMessage = require("ui/widget/infomessage")
 local InputDialog = require("ui/widget/inputdialog")
+local ConfirmBox = require("ui/widget/confirmbox")
 local DataStorage = require("datastorage")
 local NetworkMgr = require("ui/network/manager")
 
@@ -347,6 +348,14 @@ end
 function InkBridge:_advanced_menu()
     return {
         { text = "修改设备名称", callback = function() self:set_device_label() end },
+        { text = "打开书时自动核对云端更新",
+          help_text = "只在你已经联网时检查；不会自己开 Wi-Fi",
+          checked_func = function() return self:auto_check_enabled() end,
+          callback = function()
+              self:set_auto_check(not self:auto_check_enabled())
+              show("墨桥：打开书时自动核对已"
+                  .. (self:auto_check_enabled() and "开启。" or "关闭。"))
+          end },
         -- 写回不在菜单里放"按钮":上传进度时会自动写(见 _sync 的成功回调)。
         -- 这里只留一个开关,因为它是**覆盖另一台设备状态**的动作。
         { text = "上传时自动写入静读天下",
@@ -441,6 +450,122 @@ function InkBridge:_do_check_update()
     show("墨桥 · 检查更新\n" .. table.concat(lines, "\n"))
 end
 
+-- ── 打开书时自动核对云端有没有更新的进度 ──────────────────────────────────
+--
+-- 写法跟着 KOReader 官方进度同步插件(kosync)走:onReaderReady + nextTick + 一个开关。
+-- 三条自我约束 —— 否则这功能会从"贴心"变成"骚扰":
+--   1. **绝不自动开 WiFi**:只在已经联网时查,没网就静默跳过;
+--   2. **本机没同步过的设备不提示**:否则第一次打开这本书就弹;
+--   3. 同一本书 10 分钟内只查一次,免得反复翻书时狂发请求。
+--
+-- 新旧一律用**服务器时间**比:记录项的 modification 与 .po 的 Last-Modified
+-- 都来自同一台服务器,不受两台设备时钟差的影响(设备本地时间不可比,这点吃过亏)。
+
+InkBridge.AUTO_CHECK_SETTING  = "inkbridge_auto_check"
+InkBridge.AUTO_CHECK_INTERVAL = 600      -- 同一本书两次检查的最小间隔(秒)
+
+function InkBridge:auto_check_enabled()
+    local v = G_reader_settings:readSetting(InkBridge.AUTO_CHECK_SETTING)
+    if v == nil then return true end     -- 默认开
+    return v and true or false
+end
+
+function InkBridge:set_auto_check(on)
+    G_reader_settings:saveSetting(InkBridge.AUTO_CHECK_SETTING, on and true or false)
+end
+
+-- 记录名格式:<书名>-MMDD-HHMMSS-<设备名>.<短哈希>.InkBridge.txt
+-- 里面的时间戳与设备名只给人看;真正用来比新旧的是服务器时间。
+function InkBridge:_record_device(name)
+    return tostring(name or ""):match("%-%d%d%d%d%-%d%d%d%d%d%d%-(.-)%.%x+%.InkBridge%.txt$")
+end
+
+function InkBridge:_get_seen(book_id)
+    local raw = G_reader_settings:readSetting("inkbridge_seen:" .. tostring(book_id))
+    return type(raw) == "table" and raw or {}
+end
+
+function InkBridge:_set_seen(book_id, seen)
+    G_reader_settings:saveSetting("inkbridge_seen:" .. tostring(book_id), seen or {})
+end
+
+-- KOReader 在书准备好之后会调用插件的这个方法(官方 kosync 插件同款)。
+function InkBridge:onReaderReady()
+    if not self:auto_check_enabled() then return end
+    UIManager:nextTick(function() self:_auto_check_remote() end)
+end
+
+function InkBridge:_auto_check_remote()
+    local entry = self:_book_context()
+    if not entry then return end        -- 没有书 / 取不到上下文:静默
+    if type(self.server) ~= "table" or self.server.type ~= "webdav" then return end
+
+    -- **不自动开 WiFi**:没联网就安静跳过,把"要不要联网"留给用户决定
+    if not NetworkMgr:isConnected() then return end
+
+    local now = os.time()
+    self._auto_check_at = self._auto_check_at or {}
+    local last = self._auto_check_at[entry.book_id]
+    if last and now - last < InkBridge.AUTO_CHECK_INTERVAL then return end
+    self._auto_check_at[entry.book_id] = now
+
+    WebDAV.list_history(self, self:_history_prefix(entry), function(ok, records)
+        if not ok or type(records) ~= "table" or #records == 0 then return end
+
+        -- 同一台设备只留它最新的一条
+        local newest = {}
+        for _, item in ipairs(records) do
+            local device = self:_record_device(item.text)
+            local t = tonumber(item.modification)
+            if device and t and (not newest[device] or t > newest[device].time) then
+                newest[device] = { source = device, time = t, url = item.url }
+            end
+        end
+        local cands = {}
+        for _, c in pairs(newest) do cands[#cands + 1] = c end
+
+        local updates = WebDAV.select_updates(cands, self:_get_seen(entry.book_id))
+        if #updates == 0 then return end
+        self:_ask_remote_update(entry, updates)
+    end)
+end
+
+function InkBridge:_ask_remote_update(entry, updates)
+    local parts = {}
+    for _, u in ipairs(updates) do
+        parts[#parts + 1] = string.format("%s（%s）", u.source,
+            WebDAV.human_age(os.time() - (tonumber(u.time) or 0)))
+    end
+    local newest = updates[1]
+
+    -- 无论跳还是忽略都记下"已见过",否则每次打开这本书都会再弹一次。
+    local function remember()
+        local seen = self:_get_seen(entry.book_id)
+        for _, u in ipairs(updates) do seen[u.source] = u.time end
+        self:_set_seen(entry.book_id, seen)
+    end
+
+    UIManager:show(ConfirmBox:new{
+        text = "云端有更新的进度：\n" .. table.concat(parts, "\n") .. "\n\n要跳过去吗？",
+        ok_text = "跳转",
+        cancel_text = "忽略",
+        ok_callback = function()
+            remember()
+            WebDAV.download(self, newest.url, function(ok, remote, err)
+                if not ok or not remote then
+                    show("墨桥：下载失败 —— " .. WebDAV.describe_error(err))
+                    return
+                end
+                UIManager:nextTick(function()
+                    -- 已经问过用户了,这里别再问第二遍
+                    WebDAV.confirm_jump(self, remote, { already_confirmed = true })
+                end)
+            end)
+        end,
+        cancel_callback = remember,
+    })
+end
+
 -- KOReader 调用这个方法，把插件菜单加入工具菜单。
 function InkBridge:addToMainMenu(menu_items)
     menu_items.inkbridge = {
@@ -483,6 +608,7 @@ function InkBridge:deletePluginSettings()
     G_reader_settings:delSetting("inkbridge_moon_dir")
     G_reader_settings:delSetting("inkbridge_moon_book_ref")
     G_reader_settings:delSetting("inkbridge_moon_auto_push")
+    G_reader_settings:delSetting("inkbridge_auto_check")
 end
 
 return InkBridge
