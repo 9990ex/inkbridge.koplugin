@@ -576,8 +576,11 @@ function InkBridge:_auto_check_moon(entry)
         if same_place then return end
 
         UIManager:show(ConfirmBox:new{
-            text = string.format("静读天下有了新进度（第 %d 章）。\n\n要跳过去吗？",
-                                 (tonumber(peek.po.star) or 0) + 1),
+            -- 文案与下载列表保持一致:时间 + 百分比 + 方向。
+            -- 刻意不说"有了新进度" —— 我们判断的是"内容变没变",不判断新旧;
+            -- 静读天下被翻回旧章节时同样是"变了",这时说"新"就是假话。
+            text = "静读天下那边有变化：\n"
+                .. Moonsync.peek_label(peek, os.time(), pos) .. "\n\n要跳过去吗？",
             ok_text = "跳转",
             cancel_text = "忽略",
             ok_callback = function()
