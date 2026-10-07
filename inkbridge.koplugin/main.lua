@@ -280,10 +280,102 @@ function InkBridge:_sync(entry, mode)
                 moon_note = "静读天下未同步（内部错误：" .. tostring(note) .. "）"
             end
             show("墨桥：阅读进度上传成功。" .. (moon_note and ("\n" .. moon_note) or ""))
+
+            -- 保留策略(见 _prune_history 的说明)。刻意放在 show **之后**,而且不参与
+            -- 上面那句话:它是后台维护,不该让用户多等一次网络往返,
+            -- 也不该改变"上传成功"这个结论(整段 pcall 包住)。
+            pcall(function()
+                self:_prune_history(self:_history_prefix(entry), history_name)
+            end)
         else
             show("墨桥：阅读进度上传失败 —— " .. WebDAV.describe_error(upload_err))
         end
     end)
+end
+
+-- ── 云端历史记录的保留策略 ────────────────────────────────────────────────
+--
+-- 每上传一次就多一个文件(文件名带秒级时间戳,追加式),云端**只增不减** ——
+-- 一年下来是几百个几百字节的小文件。这里定个上限:
+--
+--     每台设备、每本书,只保留最近 HISTORY_KEEP 条。
+--
+-- 为什么是"每台设备":记录文件名里的设备名就是干这个用的。一台设备留 N 条,
+-- 三台设备就有 3N 条 —— 这才是"每台设备还能翻到自己的历史"该有的量。
+-- 如果按书全局只留 N 条,一台很少同步的设备的历史会被另一台挤光。
+--
+-- 为什么按**服务器时间**排序:记录名里的时间戳是设备本地时钟,两台机器差几分钟
+-- 很正常;列表项的 modification 来自同一台服务器,才是可比的(和"选更新"同一套理由)。
+InkBridge.HISTORY_KEEP = 10
+
+-- 删掉超出上限的旧记录;完成(或放弃)时回调删掉的条数。
+--
+-- 四条安全线,缺一不可 —— 删除是**不可逆**的:
+--   1. 只处理 list_history 认出来的记录。它按书名短哈希筛,别的东西根本进不来;
+--   2. **刚上传的那一条永不删**(按文件名精确排除),哪怕服务器把它的时间戳给成 0
+--      导致它排在最后 —— 删掉它等于这次上传白做;
+--   3. **认不出设备名的记录一律不碰**(旧格式)。宁可多留一个,也不能把另一台设备
+--      唯一的记录当成垃圾清掉;
+--   4. 全程 pcall,而且调用点在"上传成功"之后 —— 清理失败绝不能影响那个结论。
+function InkBridge:_prune_history(prefix, keep_name, on_done)
+    local function done(n)
+        if on_done then pcall(on_done, n or 0) end
+    end
+    if type(WebDAV.delete_file) ~= "function" then done(0); return end
+
+    local ok_call, err = pcall(function()
+        WebDAV.list_history(self, prefix, function(listed, entries)
+            if not listed or type(entries) ~= "table" then done(0); return end
+
+            -- 按设备分组
+            local by_device = {}
+            for _, item in ipairs(entries) do
+                local device = self:_record_device(item.text)
+                if device and item.url then
+                    by_device[device] = by_device[device] or {}
+                    table.insert(by_device[device], item)
+                end
+            end
+
+            local doomed = {}
+            for _, list in pairs(by_device) do
+                -- list_history 已经按服务器时间从新到旧排过,这里再排一次:
+                -- 删除不可逆,不该依赖"别人保证的顺序"。
+                table.sort(list, function(a, b)
+                    return (tonumber(a.modification) or 0) > (tonumber(b.modification) or 0)
+                end)
+                for i = InkBridge.HISTORY_KEEP + 1, #list do
+                    if list[i].text ~= keep_name then
+                        doomed[#doomed + 1] = list[i]
+                    end
+                end
+            end
+
+            if #doomed == 0 then done(0); return end
+
+            -- 一条一条删:provider.run 是同步回调,但删除是网络动作,
+            -- 串行更稳,也避免同时开一堆连接。
+            local index, deleted = 0, 0
+            local function step()
+                index = index + 1
+                local item = doomed[index]
+                if not item then done(deleted); return end
+                local ok_del = pcall(function()
+                    WebDAV.delete_file(self, item.url, function(ok_one)
+                        if ok_one then deleted = deleted + 1 end
+                        step()
+                    end)
+                end)
+                if not ok_del then step() end
+            end
+            step()
+        end)
+    end)
+
+    if not ok_call then
+        -- 连列目录都没派出去:什么都别做(记录留着总比删错好)
+        done(0)
+    end
 end
 
 -- 比较两个位置，而不是比较跨设备的 Unix 时间。
@@ -442,7 +534,7 @@ function InkBridge:_advanced_menu()
               -- 打开浏览器不现实,把链接摆出来让用户抄写更实际。
               { text = Update.HOMEPAGE, help_text = "项目主页（不联网打开）" },
               { text = "许可证 GPL-3.0" },
-              { text = "实验性 Alpha，不代表稳定版本" },
+              { text = "0.x：核心功能已真机验证，仍在打磨" },
           } },
     }
 end

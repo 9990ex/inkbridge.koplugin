@@ -178,11 +178,15 @@ do
     for _, name in ipairs({ "get_dir", "set_dir", "fetch_po", "section_html", "section_blocks",
                             "section_blocks_tagged", "book_metrics", "get_book_ref",
                             "learn_book_ref", "request", "backup_po", "import_from_moon",
-                            "push_to_moon", "_do_push", "build_push_job", "auto_push",
+                            "_do_push", "build_push_job", "auto_push",
                             "auto_enabled", "set_auto", "local_position", "describe_direction",
-                            "peek_po", "peek_label", "format_time" }) do
+                            "peek_po", "peek_label", "format_time",
+                            "platform", "get_platform", "set_platform", "default_dir",
+                            "is_progress_file", "list_progress_files", "pick_po", "import_named" }) do
         check("导出 " .. name, type(MS[name]) == "function")
     end
+    -- 反向:删掉的东西不该再被导出(留着就是"还能点到"的错觉)
+    eq("push_to_moon 已彻底删除", MS.push_to_moon, nil)
 end
 
 -- ── 目录设置 ───────────────────────────────────────────────────────────────

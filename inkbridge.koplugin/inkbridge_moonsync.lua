@@ -741,40 +741,14 @@ function Moonsync.auto_push(plugin)
     return brief
 end
 
--- 菜单动作(手动):算完先让用户看清"会覆盖什么",确认后才写。
-function Moonsync.push_to_moon(plugin)
-    local job, err = Moonsync.build_push_job(plugin)
-    if not job then
-        show("墨桥：无法写入静读天下 —— " .. tostring(err) .. "。")
-        return
-    end
-
-    local lines = {
-        "把本机阅读位置写给静读天下？",
-        "",
-        string.format("本机位置：DocFragment[%d] 第 %d 个 <p>，段内第 %d 字",
-                      job.section + 1, job.p_index, job.text_offset),
-        string.format("换算结果：章内偏移 %d", job.hash),
-        "写入内容：" .. job.body,
-        "进度百分比：" .. job.pct_note,
-        "写入前自检：" .. job.checked,
-    }
-    if job.old_line then
-        table.insert(lines, "云端原值：" .. job.old_line .. "（将被覆盖）")
-    else
-        table.insert(lines, "云端原本没有这本书的文件（将新建）")
-    end
-    table.insert(lines, "文件名：" .. tostring(job.filename))
-    table.insert(lines, "")
-    table.insert(lines, "这会覆盖静读天下里这本书的进度；写入前会自动备份原值。")
-
-    UIManager:show(ConfirmBox:new{
-        text = table.concat(lines, "\n"),
-        ok_text = "写入",
-        cancel_text = "取消",
-        ok_callback = function() Moonsync._do_push(plugin, job) end,
-    })
-end
+-- 这里**没有**"手动写回"这个菜单动作。
+--
+-- 曾经有一个 Moonsync.push_to_moon(弹确认框,让用户看清会覆盖什么再写),但它没有
+-- 任何入口 —— 「上传时自动写入静读天下」这个开关(默认开)已经把这件事做掉了,
+-- 再加一个手动按钮等于给同一个动作两条路,用户还得猜哪条才是对的。
+-- 留着不用的导出函数只会让下一个读代码的人以为它还能被点到,所以整个删掉。
+-- 需要手动重写一次时:关掉再打开那个开关没有意义,直接重新「上传阅读进度」即可
+-- (上传成功就会顺手写一次)。
 
 -- ── 手动选进度文件 ────────────────────────────────────────────────────────
 --

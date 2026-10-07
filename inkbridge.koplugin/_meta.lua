@@ -7,6 +7,6 @@
 -- 这样才能直接复用 KOReader 自带的几十种语言翻译。
 return {
     fullname = "InkBridge / 墨桥",
-    description = "通过 WebDAV 在 KOReader 设备之间手动同步阅读位置的实验性插件（Alpha）",
-    version = "0.2.34-alpha",
+    description = "通过 WebDAV 在 KOReader 与静读天下之间同步阅读位置的插件",
+    version = "0.3.0",
 }

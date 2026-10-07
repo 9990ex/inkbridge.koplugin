@@ -29,10 +29,11 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 当前状态
 
-**已有可用的实验性 Alpha（`0.2.34-alpha`）**，可在 [Releases](../../releases) 下载安装包。
-上传、下载、跨设备跳转的完整流程已在 Android 与 Kindle 设备上实测通过。
+**已有可用的 0.3.0**，可在 [Releases](../../releases) 下载安装包。
+上传、下载、跨设备跳转的完整流程已在 Android 与 Kindle 设备上实测通过，
+与静读天下（Moon+ Reader）的双向互通也已真机验证。
 
-这是 Alpha：功能可用但仍在快速迭代，不代表稳定版本。使用前请先读插件自己的说明
+这是 0.x 版本：核心功能已真机验证，但仍在打磨，不代表稳定版本。使用前请先读插件自己的说明
 [`inkbridge.koplugin/README.md`](inkbridge.koplugin/README.md)。
 
 ### 安装

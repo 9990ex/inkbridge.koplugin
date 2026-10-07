@@ -428,6 +428,59 @@ function WebDAV.list_history(plugin, prefix, callback)
     if not dispatched then finish(false, nil, tostring(err)) end
 end
 
+-- 删除云端的**某一个**文件(目前只有"清理过期历史记录"用)。
+--
+-- 为什么不用 CloudStorage 自带的删除:那个挂在文件管理器的长按菜单上,只能人手点,
+-- 代码里调不到。provider.deleteFile(url) 可以直接调,但要像 list/upload 一样先把
+-- provider.base 摆成目标服务器。
+--
+-- 两条自我约束:
+--   * 远端路径来自服务器返回的列表项,**不可信任** —— 这里复用和下载同一套
+--     is_safe_remote_path 校验。删错东西比读错东西严重得多;
+--   * **不抛异常**。调用方都在"上传成功"之后,删不掉一条旧记录绝不能让人以为上传失败了。
+--
+-- 回调 (ok, err)。
+function WebDAV.delete_file(plugin, url, callback)
+    if type(callback) ~= "function" then return end
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then
+        callback(false, "WebDAV destination is not configured")
+        return
+    end
+    if not is_safe_remote_path(url) then
+        callback(false, "invalid remote path")
+        return
+    end
+
+    local ui = plugin.ui
+    local manager = ui and ui.cloudstorage
+    local providers = manager and manager.providers
+    local provider = providers and providers.webdav
+    if not provider or type(provider.run) ~= "function"
+            or type(provider.deleteFile) ~= "function" then
+        callback(false, "KOReader WebDAV provider cannot delete files")
+        return
+    end
+
+    local old_base = provider.base
+    provider.base = provider_base(server)
+    local finished = false
+    local function finish(ok, err)
+        if finished then return end
+        finished = true
+        provider.base = old_base
+        callback(ok, err)
+    end
+
+    local function request()
+        local ok, result = pcall(function() return provider.deleteFile(url) end)
+        if not ok then finish(false, tostring(result)); return end
+        if result then finish(true, nil) else finish(false, "WebDAV delete failed") end
+    end
+    local dispatched, err = pcall(provider.run, request)
+    if not dispatched then finish(false, tostring(err)) end
+end
+
 -- 列出一个**任意目录**(只读元数据,不下载内容),把文件项交给回调。
 --
 -- 为什么需要它:静读天下的 .po 不在当前 server.url 的历史记录里,要单独列它那个目录,

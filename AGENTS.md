@@ -6,20 +6,24 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（689 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（746 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
    luajit tests/moon_spec.lua       # 159 条  位置格式的解析与生成
-   luajit tests/moonsync_spec.lua   # 205 条  静读天下互通（读、写、平台、手动选文件）
+   luajit tests/moonsync_spec.lua   # 213 条  静读天下互通（读、写、平台、手动选文件）
    luajit tests/update_spec.lua     #  48 条  版本比较与 release 解析
-   luajit tests/webdav_spec.lua     # 159 条  云存储层（上传/下载/列目录）
-   luajit tests/main_spec.lua       #  37 条  主流程
+   luajit tests/webdav_spec.lua     # 184 条  云存储层（上传/下载/列目录/删除）
+   luajit tests/main_spec.lua       #  61 条  主流程与云端记录保留策略
    luajit tests/state_spec.lua      #  81 条  位置记录本身
    ```
 
    全绿才算过。需要 LuaJIT（与 KOReader 运行时同款）。新增 spec 请一并写进
    `tests/run_all.sh` 和本节 —— 漏掉一份，等于那个模块没人看着。
+
+   涉及**删除或覆盖**云端数据的改动（`WebDAV.delete_file`、`InkBridge:_prune_history`、
+   `.po` 写回），除了正常路径，必须覆盖：路径校验拒绝、provider 抛异常、
+   服务器拒绝、以及"绝不删错那一条"的守卫。
 
 2. **涉及 Lua 模式（pattern）的改动必须实测，不能目测**。本项目的两个致命 bug 都是"想当然"造成的：
    - 字符类里放 NUL 字节会让模式非法（`malformed pattern`），NUL 必须写 `%z`；

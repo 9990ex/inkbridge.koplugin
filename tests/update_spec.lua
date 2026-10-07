@@ -135,8 +135,8 @@ do
           tostring(find_value(kv, "安装包")):find("57 KB", 1, true) ~= nil,
           find_value(kv, "安装包"))
     eq("许可证", find_value(kv, "许可证"), "GPL-3.0")
-    check("带 Alpha 声明",
-          tostring(find_value(kv, "说明")):find("Alpha", 1, true) ~= nil)
+    check("带上阶段说明",
+          tostring(find_value(kv, "说明")):find("0.x", 1, true) ~= nil)
 
     local same = Update.describe("0.2.25-alpha",
                                  { tag = "v0.2.25-alpha", asset_name = "a.zip", asset_size = 1 })

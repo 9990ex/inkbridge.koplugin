@@ -2,7 +2,7 @@
 --
 -- 为什么先只做"查":自动安装要**替换正在运行的插件目录**。一旦解压到一半失败,
 -- 插件就废了 —— 而它恰恰是"修插件"的工具。所以这一步先把"有没有新版"说清楚,
--- 自动安装留到插件不那么 alpha 的时候。完整设计(下载 → 解压到临时目录 → 校验 →
+-- 自动安装留到插件更稳的时候。完整设计(下载 → 解压到临时目录 → 校验 →
 -- 原子改名替换 → 提示重启)已记录在 research/ 的笔记里。
 --
 -- 本模块只做纯计算(版本比较、解析 GitHub 返回、拼展示内容),不碰网络与界面 ——
@@ -15,7 +15,9 @@ Update.REPO     = "9990ex/inkbridge.koplugin"
 Update.API_URL  = "https://api.github.com/repos/" .. Update.REPO .. "/releases/latest"
 Update.HOMEPAGE = "https://github.com/" .. Update.REPO
 
--- "0.2.24-alpha" → { 0, 2, 24 };非数字段忽略(我们所有版本都带 alpha 后缀)。
+-- "0.2.24-alpha" / "0.3.0" → { 0, 2, 24 } / { 0, 3, 0 }。
+-- 只取数字段,所以带不带 `-alpha` 这类预发布后缀都不影响比较
+-- (0.2.24-alpha 与 0.2.24 在这里是同一个版本,这正是我们要的)。
 function Update.version_numbers(v)
     local nums = {}
     for n in tostring(v or ""):gmatch("(%d+)") do
@@ -111,7 +113,7 @@ function Update.describe(current, rel)
     end
     table.insert(pairs_out, { "项目主页", Update.HOMEPAGE })
     table.insert(pairs_out, { "许可证",   "GPL-3.0" })
-    table.insert(pairs_out, { "说明",     "实验性 Alpha，不代表稳定版本" })
+    table.insert(pairs_out, { "说明",     "0.x：核心功能已真机验证，仍在打磨" })
     return pairs_out
 end
 

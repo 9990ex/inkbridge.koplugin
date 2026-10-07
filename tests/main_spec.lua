@@ -307,6 +307,139 @@ do
     eq("带参调用也不含非 ASCII", path2, path)
 end
 
+-- ============================================================================
+print("== 7. 云端历史记录的保留策略（每台设备每本书留 10 条）==")
+-- ============================================================================
+-- 这是本项目里**唯一会删用户云端数据**的代码,每一条安全线都要有测试。
+-- 删除不可逆 —— 出错的代价不是"多一个文件",而是"另一台设备的记录没了"。
+do
+    -- 真名格式:<书名>-MMDD-HHMMSS-<设备名>.<短哈希>.InkBridge.txt
+    -- idx 让每条的 HMMSS 与 url 都唯一(否则 fixture 自己就会撞成一条)。
+    local function record(device, time, idx)
+        local name = "死人经-1006-" .. string.format("%06d", idx)
+            .. "-" .. device .. ".deadbeef.InkBridge.txt"
+        return { is_file = true, text = name, url = "/books/" .. name,
+                 modification = time }
+    end
+
+    local function prune_plugin(items, delete_ok)
+        local deleted = {}
+        local provider = {
+            run = function(cb) cb() end,
+            listFolder = function() return items end,
+            deleteFile = function(url)
+                deleted[#deleted + 1] = url     -- 先记下"确实调用过",再模拟失败
+                if delete_ok == "throw" then error("boom") end
+                if delete_ok == false then return nil end
+                return true
+            end,
+        }
+        local p = new_plugin{ ui = { cloudstorage = { providers = { webdav = provider } } } }
+        return p, deleted
+    end
+
+    local function run_prune(p, keep_name)
+        local got
+        p:_prune_history("deadbeef", keep_name, function(n) got = n end)
+        return got
+    end
+
+    -- ① 到上限为止:一条都不删
+    local items = {}
+    for i = 1, 10 do items[i] = record("汉王C7T", 1000 + i, i) end
+    local p, del = prune_plugin(items)
+    eq("恰好 10 条:不删", run_prune(p, "没有这条"), 0)
+    eq("  也没发出删除请求", #del, 0)
+
+    -- ② 超一条:删最旧的那一条
+    items = {}
+    for i = 1, 11 do items[i] = record("汉王C7T", 1000 + i, i) end
+    p, del = prune_plugin(items)
+    eq("11 条:删 1 条", run_prune(p, "没有这条"), 1)
+    eq("  最旧的那条被删", del[1], record("汉王C7T", 1001, 1).url)
+
+    -- ③ 每台设备**各算各的** —— 这是"每设备 10 条"的关键
+    items = {}
+    for i = 1, 11 do items[i] = record("汉王C7T", 2000 + i, i) end          -- 11 条
+    for i = 1, 3  do items[#items + 1] = record("Kindle", 3000 + i, 100 + i) end  -- 3 条
+    p, del = prune_plugin(items)
+    eq("两台设备:只删超限的那台", run_prune(p, "没有这条"), 1)
+    eq("  删的是汉王最旧那条", del[1], record("汉王C7T", 2001, 1).url)
+    check("  没碰 Kindle 的任何一条",
+          del[1] ~= record("Kindle", 3001, 101).url
+          and del[1] ~= record("Kindle", 3002, 102).url)
+
+    -- ④ ★ 刚上传的那一条**永不删**,哪怕服务器把它的时间戳给成 0(排到最后)
+    items = {}
+    for i = 1, 12 do items[i] = record("汉王C7T", 1000 + i, i) end
+    local keep_name = record("汉王C7T", 1001, 1).text      -- 最旧的那条,就是"刚传的"
+    p, del = prune_plugin(items)
+    eq("刚上传的那条占一个名额", run_prune(p, keep_name), 1)
+    check("  被删的不是它", del[1] ~= record("汉王C7T", 1001, 1).url, del[1])
+    eq("  删的是第二旧的", del[1], record("汉王C7T", 1002, 2).url)
+
+    -- ⑤ 认不出设备名的记录(旧格式)一律不碰
+    items = {}
+    for i = 1, 11 do items[i] = record("汉王C7T", 1000 + i, i) end
+    items[#items + 1] = { is_file = true, text = "InkBridge-deadbeef-1700000000.json",
+                          url = "/books/InkBridge-deadbeef-1700000000.json",
+                          modification = 1 }
+    p, del = prune_plugin(items)
+    eq("旧格式记录不参与计数", run_prune(p, "没有这条"), 1)
+    eq("  只删了一条", #del, 1)
+    check("  旧格式那条没被删",
+          del[1] ~= "/books/InkBridge-deadbeef-1700000000.json", del[1])
+
+    -- ⑥ 列目录失败:什么都不删(保留总比删错好)
+    p, del = prune_plugin(nil)
+    eq("列目录失败:不删", run_prune(p, "没有这条"), 0)
+    eq("  一条都没发出去", #del, 0)
+
+    -- ⑦ 服务器拒绝删除:计数不涨,也不抛
+    p, del = prune_plugin(items, false)
+    eq("服务器拒绝:计数为 0", run_prune(p, "没有这条"), 0)
+    eq("  但确实尝试过", #del, 1)
+
+    -- ⑧ 删除抛异常:吃掉,继续删剩下的(不能让第 1 条失败挡住第 2 条)
+    items = {}
+    for i = 1, 12 do items[i] = record("汉王C7T", 1000 + i, i) end
+    p, del = prune_plugin(items, "throw")
+    eq("抛异常不传播,计数为 0", run_prune(p, "没有这条"), 0)
+    eq("  并且把该试的两条都试了", #del, 2)
+
+    -- ⑨ provider 不支持删除(老版本):放弃,不误报
+    items = {}
+    for i = 1, 12 do items[i] = record("汉王C7T", 1000 + i, i) end
+    local p9 = new_plugin{ ui = { cloudstorage = { providers = { webdav = {
+        run = function(cb) cb() end,
+        listFolder = function() return items end,
+    } } } } }
+    eq("provider 不能删:计数为 0(也不会报成功)", run_prune(p9, "没有这条"), 0)
+
+    -- ⑩ 三台设备各超限:条数相加
+    items = {}
+    for i = 1, 13 do items[i] = record("A", 1000 + i, i) end
+    for i = 1, 12 do items[#items + 1] = record("B", 2000 + i, 100 + i) end
+    for i = 1, 10 do items[#items + 1] = record("C", 3000 + i, 200 + i) end
+    p, del = prune_plugin(items)
+    eq("A 超 3、B 超 2、C 不超 → 删 5", run_prune(p, "没有这条"), 5)
+    eq("  确实发了 5 个删除请求", #del, 5)
+
+    -- ⑪ list_history 自己崩掉:整段被 pcall 包住,清理绝不能把上传流程带崩;
+    --    但也必须**回调出去**,否则调用方会一直等。
+    local p11 = new_plugin{ ui = { cloudstorage = { providers = { webdav = {
+        run = function() error("dispatcher down") end,
+        listFolder = function() return {} end,
+        deleteFile = function() return true end,
+    } } } } }
+    local called = false
+    local ok11 = pcall(function()
+        p11:_prune_history("deadbeef", "x", function() called = true end)
+    end)
+    check("派发崩掉也不抛异常", ok11)
+    eq("  仍然回调(计数 0)", called, true)
+end
+
 -- 收尾：清掉测试用的设置目录
 os.execute('rmdir /s /q "' .. SETTINGS_DIR .. '" 2>nul')
 

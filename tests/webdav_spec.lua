@@ -135,6 +135,13 @@ local function make_env(opts)
         calls.base_during_list = provider.base   -- 验证 base 的副本/恢复行为
         return opts.listing
     end
+    provider.deleteFile = function(url)
+        calls.deleted = calls.deleted or {}
+        calls.deleted[#calls.deleted + 1] = url
+        calls.base_during_delete = provider.base
+        if opts.delete_ok ~= nil then return opts.delete_ok end
+        return true
+    end
 
     local manager = { providers = { webdav = provider } }
     if opts.manager_upload_cb then
@@ -783,6 +790,79 @@ do
     call(make_env{ listing = {} }, "/x")
     eq("绝不把 show_unsupported 写进设置文件", saves, 0)
     G_reader_settings.saveSetting = real_save
+end
+
+-- ── 删除云端文件(只给"清理过期记录"用) ────────────────────────────────────
+-- 删除是**不可逆**的,所以这个函数的每一条拒绝路径都要有测试:
+-- 宁可删不掉,也绝不能删错。
+print("== delete_file（删除单个云端文件）==")
+do
+    local function del(plugin, url)
+        return invoke(function(cb) WebDAV.delete_file(plugin, url, cb) end)
+    end
+
+    local r = del({ server = { type = "dropbox" }, ui = {} }, "/x.txt")
+    eq("非 WebDAV 目标 → 失败", r[1], false)
+    check("  并说明原因",
+          type(r[2]) == "string" and r[2]:find("not configured", 1, true) ~= nil, r[2])
+
+    -- ★ 远端路径来自服务器返回的列表项,不可信任 —— 和下载同一套校验
+    local bad_paths = {
+        { "反斜杠",     "/books\\evil.txt" },
+        { "双点穿越",   "/books/../../etc/passwd" },
+        { "协议头",     "http://evil/x" },
+        { "换行",       "/books/a\nb.txt" },
+        { "空串",       "" },
+    }
+    local plugin, provider, calls = make_env{ listing = {} }
+    for _, c in ipairs(bad_paths) do
+        r = del(plugin, c[2])
+        eq("拒绝：" .. c[1], r[1], false)
+    end
+    eq("  非法路径一个都没送到 provider", calls.deleted, nil)
+    eq("  拒绝 nil", del(plugin, nil)[1], false)
+    eq("  拒绝数字", del(plugin, 123)[1], false)
+
+    -- provider 不支持删除(老版本 / 非 WebDAV 后端)
+    local p2 = make_env{ listing = {} }
+    p2.ui.cloudstorage.providers.webdav.deleteFile = nil
+    r = del(p2, "/books/x.txt")
+    eq("provider 不能删 → 失败", r[1], false)
+    check("  并说明原因",
+          type(r[2]) == "string" and r[2]:find("cannot delete", 1, true) ~= nil, r[2])
+
+    -- 正常
+    local p3, prov3, c3 = make_env{ listing = {} }
+    r = del(p3, "/books/旧记录.InkBridge.txt")
+    eq("正常删除 → 成功", r[1], true)
+    eq("  没有错误", r[2], nil)
+    eq("  把路径原样交给 provider", c3.deleted and c3.deleted[1], "/books/旧记录.InkBridge.txt")
+    eq("  调用期间 base 指向目标服务器",
+       c3.base_during_delete and c3.base_during_delete.address, p3.server.address)
+    check("  base 是副本,不是插件设置表本身", c3.base_during_delete ~= p3.server)
+    eq("  调用后 base 还原", prov3.base, nil)
+
+    -- 服务器拒绝(provider 返回 nil)
+    local p4 = make_env{ listing = {}, delete_ok = false }
+    r = del(p4, "/books/x.txt")
+    eq("服务器拒绝 → 失败", r[1], false)
+    eq("  base 也要还原", p4.ui.cloudstorage.providers.webdav.base, nil)
+
+    -- 抛异常:吃掉,并且还原 base
+    local p5 = make_env{ listing = {} }
+    p5.ui.cloudstorage.providers.webdav.deleteFile = function() error("boom") end
+    r = del(p5, "/books/x.txt")
+    eq("抛异常 → 失败(不抛出)", r[1], false)
+    check("  带上原始原因",
+          type(r[2]) == "string" and r[2]:find("boom", 1, true) ~= nil, r[2])
+    eq("  异常时也要还原 base", p5.ui.cloudstorage.providers.webdav.base, nil)
+
+    -- provider.run 本身抛异常
+    local p6 = make_env{ listing = {} }
+    p6.ui.cloudstorage.providers.webdav.run = function() error("dispatcher down") end
+    r = del(p6, "/books/x.txt")
+    eq("派发失败 → 失败", r[1], false)
+    eq("  此时也不该发出删除请求", p6.ui.cloudstorage.providers.webdav.base, nil)
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
