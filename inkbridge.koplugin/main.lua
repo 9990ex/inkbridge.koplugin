@@ -19,6 +19,7 @@ local State = require("inkbridge_state")
 local WebDAV = require("inkbridge_webdav")
 local Meta = require("_meta")
 local Moonsync = require("inkbridge_moonsync")
+local Update = require("inkbridge_update")
 
 -- KOReader 插件通常继承 WidgetContainer。
 -- extend{} 会创建一个可以接收 KOReader 生命周期事件的插件类。
@@ -113,7 +114,7 @@ end
 function InkBridge:set_device_label()
     local dialog
     dialog = InputDialog:new{
-        title = "设置设备名称",
+        title = "修改设备名称",
         description = "设备名称会显示在云端历史记录文件名中。",
         input = self.device_label or "KOReader",
         buttons = {{
@@ -308,6 +309,139 @@ function InkBridge:download_current()
     self:_with_network(function() self:_sync(entry, "download") end)
 end
 
+-- 是否已经配置过云同步目标(决定一级菜单要不要放"未配置"引导)。
+function InkBridge:_has_server()
+    local s = G_reader_settings and G_reader_settings:readSetting("inkbridge_webdav_server")
+    return type(s) == "table" and s.type ~= nil
+end
+
+-- 存储选项(A 方案):**只有一个后端时不制造"假选择"**,直接把它的子项摊开。
+-- 以后真加了第二个后端(比如 Syncthing),这里自然长成
+--   存储选项 → WebDAV / Syncthing → 各自的目录
+-- 而不会在只有一个后端时留下一个"点进去只有一个选项"的空转层。
+function InkBridge:_storage_menu()
+    local backends = {
+        { text = "WebDAV", sub_item_table_func = function() return self:_webdav_menu() end },
+    }
+    if #backends == 1 then
+        return backends[1].sub_item_table_func()
+    end
+    return backends
+end
+
+-- 一个云同步后端内部:它自己的连接设置 + 借它同步的各个阅读器目录。
+-- 注意:「墨桥同步目录」是**整个**选服务器+选目录;只有一台服务器时,
+-- KOReader 的云存储列表里本来就只有一项,用户点一下也就进目录了(见 README 说明)。
+function InkBridge:_webdav_menu()
+    return {
+        { text = "墨桥同步目录",
+          help_text = "选一台云服务器，再选墨桥进度存放的目录",
+          callback = function() WebDAV.pick_server(self) end },
+        { text = "静读天下同步目录",
+          help_text = "相对上面那个目录；以 / 开头表示从服务器根算起",
+          callback = function() self:set_moon_dir() end },
+    }
+end
+
+-- 高级选项:低频设置全部收在这里,一级只留"上传/下载"两个动作。
+function InkBridge:_advanced_menu()
+    return {
+        { text = "修改设备名称", callback = function() self:set_device_label() end },
+        -- 写回不在菜单里放"按钮":上传进度时会自动写(见 _sync 的成功回调)。
+        -- 这里只留一个开关,因为它是**覆盖另一台设备状态**的动作。
+        { text = "上传时自动写入静读天下",
+          checked_func = function() return Moonsync.auto_enabled() end,
+          callback = function()
+              Moonsync.set_auto(not Moonsync.auto_enabled())
+              show("墨桥：上传时自动写入静读天下已"
+                  .. (Moonsync.auto_enabled() and "开启。" or "关闭。"))
+          end },
+        { text = "存储选项", sub_item_table_func = function() return self:_storage_menu() end },
+        { text = "检查更新",
+          help_text = "只查询有没有新版本，不会自动安装",
+          callback = function() self:check_update() end },
+        { text = "关于插件",
+          sub_item_table = {
+              { text = "当前版本 v" .. tostring(Meta.version or "unknown"),
+                help_text = "点击可检查更新",
+                callback = function() self:check_update() end },
+              -- 下面三条是纯展示项(故意不带 callback):墨水屏性能差,
+              -- 打开浏览器不现实,把链接摆出来让用户抄写更实际。
+              { text = Update.HOMEPAGE, help_text = "项目主页（不联网打开）" },
+              { text = "许可证 GPL-3.0" },
+              { text = "实验性 Alpha，不代表稳定版本" },
+          } },
+    }
+end
+
+-- 检查更新:只查、不装。
+-- 自动安装要替换正在运行的插件目录,失败会让插件变砖 —— 而它恰恰是"修插件"的工具,
+-- 所以先只把"有没有新版"说清楚(完整设计见 research/ 的笔记)。
+function InkBridge:check_update()
+    self:_with_network(function()
+        show("墨桥：正在检查更新…")
+        if UIManager.forceRePaint then UIManager:forceRePaint() end
+        UIManager:nextTick(function() self:_do_check_update() end)
+    end)
+end
+
+function InkBridge:_do_check_update()
+    local ok_http, http   = pcall(require, "socket.http")
+    local ok_sock, socket = pcall(require, "socket")
+    local ok_ltn12, ltn12 = pcall(require, "ltn12")
+    if not (ok_http and ok_sock and ok_ltn12) then
+        show("墨桥：本机缺少网络模块，无法检查更新。")
+        return
+    end
+
+    local sink, code
+    local ok = pcall(function()
+        code = tonumber(socket.skip(1, http.request{
+            url    = Update.API_URL,
+            method = "GET",
+            sink   = ltn12.sink.table(sink),
+            headers = {
+                -- GitHub 的 API 不带 User-Agent 会直接 403
+                ["User-Agent"] = "inkbridge-koplugin",
+                ["Accept"]     = "application/vnd.github+json",
+            },
+        }))
+    end)
+    local body = type(sink) == "table" and table.concat(sink) or ""
+
+    if not ok or not code then
+        show("墨桥：连不上 GitHub，检查更新失败。\n项目主页：" .. Update.HOMEPAGE)
+        return
+    end
+    if code ~= 200 then
+        show(string.format("墨桥：GitHub 返回 %d，检查更新失败。\n项目主页：%s",
+                           code, Update.HOMEPAGE))
+        return
+    end
+
+    local ok_json, rapidjson = pcall(require, "rapidjson")
+    local rel, err = Update.parse_release(body,
+        (ok_json and rapidjson and rapidjson.decode) or nil)
+    if not rel then
+        show("墨桥：没能读懂 GitHub 的返回（" .. tostring(err) .. "）。\n项目主页："
+            .. Update.HOMEPAGE)
+        return
+    end
+
+    local kv = Update.describe(tostring(Meta.version or "?"), rel)
+    local ok_kv, KeyValuePage = pcall(require, "ui/widget/keyvaluepage")
+    if ok_kv and type(KeyValuePage) == "table" and KeyValuePage.new then
+        UIManager:show(KeyValuePage:new{ title = "墨桥 · 检查更新", kv_pairs = kv })
+        return
+    end
+    -- 拿不到 KeyValuePage(极老版本)就退化成纯文本,不能让功能消失
+    local lines = {}
+    for _, row in ipairs(kv) do
+        lines[#lines + 1] = tostring(row[1]) .. "：" .. tostring(row[2])
+    end
+    show("墨桥 · 检查更新\n" .. table.concat(lines, "\n"))
+end
+
 -- KOReader 调用这个方法，把插件菜单加入工具菜单。
 function InkBridge:addToMainMenu(menu_items)
     menu_items.inkbridge = {
@@ -317,23 +451,26 @@ function InkBridge:addToMainMenu(menu_items)
         -- 动态函数比直接写 sub_item_table 更兼容不同 KOReader 版本，
         -- 也能保证每次打开菜单时都拿到当前插件实例。
         sub_item_table_func = function()
-            return {
-                { text = "设置设备名称", callback = function() self:set_device_label() end },
-                { text = "设置 WebDAV 目标", callback = function() WebDAV.pick_server(self) end },
-                { text = "上传当前阅读进度", callback = function() self:upload_current() end },
-                { text = "下载并检查阅读进度", callback = function() self:download_current() end },
-                { text = "从静读天下读取进度", callback = function() Moonsync.import_from_moon(self) end },
-                -- 写回不在菜单里放"按钮":上传进度时会自动写(见 _sync 的成功回调)。
-                -- 这里只留一个开关,因为它是**覆盖另一台设备状态**的动作。
-                { text = "上传时自动写入静读天下",
-                  checked_func = function() return Moonsync.auto_enabled() end,
-                  callback = function()
-                      Moonsync.set_auto(not Moonsync.auto_enabled())
-                      show("墨桥：上传时自动写入静读天下已"
-                          .. (Moonsync.auto_enabled() and "开启。" or "关闭。"))
-                  end },
-                { text = "设置静读天下同步目录", callback = function() self:set_moon_dir() end },
-            }
+            local items = {}
+
+            -- 一级只留两个动作之后,新用户会不知道去哪配云同步 ——
+            -- 所以未配置时在**最上面**放一条引导,配好之后它自己就消失了。
+            if not self:_has_server() then
+                table.insert(items, {
+                    text = "⚠ 尚未设置云同步，点此配置",
+                    callback = function() WebDAV.pick_server(self) end,
+                })
+            end
+
+            table.insert(items, { text = "上传阅读进度",
+                                  callback = function() self:upload_current() end })
+            table.insert(items, { text = "下载阅读进度",
+                                  callback = function() self:download_current() end })
+            table.insert(items, { text = "高级选项",
+                                  sub_item_table_func = function()
+                                      return self:_advanced_menu()
+                                  end })
+            return items
         end,
     }
 end
