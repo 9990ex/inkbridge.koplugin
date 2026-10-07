@@ -185,5 +185,38 @@ do
     check("非字符串不认", not Moon.is_html_href(nil))
 end
 
+-- ── 章节拆块与"可搜索片段" ───────────────────────────────────────────────
+-- 针对一个真实踩过的坑:片段跨段 → 全文搜索搜不到 → 掉进百分比兜底、落点差很远。
+print("== 章节拆块与可搜索片段 ==")
+do
+    local html = '<body><div><div class="logo"><img src="x.png"/></div>'
+        .. '<h2>第595章 比气</h2><p>第一段文字。</p>'
+        .. '<p>第二段：龙王给出个说法，如果真有冒充者。</p></div></body>'
+    local bl = Moon.blocks_from_html(html)
+    eq("块数(空 logo 不计入)", #bl, 3)
+    eq("第一块是标题", bl[1], "第595章比气")
+    eq("第二块", bl[2], "第一段文字。")
+    eq("第三块", bl[3], "第二段：龙王给出个说法，如果真有冒充者。")
+    eq("各块拼接 == plain_text(整章)", table.concat(bl), Moon.plain_text(html))
+
+    -- 片段必须落在单块内:从第三块内"龙王"处取
+    local off_p3 = Moon.utf8_len(bl[1]) + Moon.utf8_len(bl[2])
+    local s = Moon.snippet_in_blocks(bl, off_p3 + 4, 6)
+    eq("片段取自块内", s, "龙王给出个说")
+    check("片段是该块的子串", s ~= nil and bl[3]:find(s, 1, true) ~= nil)
+
+    -- 离块尾太近要往前借,借完仍是该块子串
+    local long = "这是一段足够长的文字用来测试向前借用"
+    local blocks = { "标题", long }
+    local near_end = Moon.utf8_len(blocks[1]) + Moon.utf8_len(long) - 2
+    local s2 = Moon.snippet_in_blocks(blocks, near_end, 20)
+    check("借字后够长", s2 ~= nil and Moon.utf8_len(s2) >= 6)
+    check("借字后仍在同一块内", s2 ~= nil and long:find(s2, 1, true) ~= nil)
+
+    -- 越界要拒绝,而不是给出跨块片段
+    eq("偏移超过全长要拒绝", Moon.snippet_in_blocks(blocks, 9999, 20), nil)
+    eq("空块列表要拒绝", Moon.snippet_in_blocks({}, 0, 20), nil)
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)

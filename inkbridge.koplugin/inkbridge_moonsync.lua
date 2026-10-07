@@ -98,9 +98,10 @@ function Moonsync.fetch_po(plugin)
     return body
 end
 
--- 打开 EPUB 取第 section_index(0 基)个正文章节的纯文本。
+-- 打开 EPUB 取第 section_index(0 基)个正文章节的**块级文本数组**。
+-- 返回数组而不是整段字符串,是因为"可搜索片段"必须落在单一段落内(见 Moon.snippet_in_blocks)。
 -- 失败返回 nil + 原因;调用方据此提示用户,绝不乱跳。
-function Moonsync.section_text(epub_path, section_index)
+function Moonsync.section_blocks(epub_path, section_index)
     local ok_req, Archiver = pcall(require, "ffi/archiver")
     if not ok_req or type(Archiver) ~= "table" or not Archiver.Reader then
         return nil, "本机没有归档模块,读不了 EPUB"
@@ -165,7 +166,7 @@ function Moonsync.section_text(epub_path, section_index)
     end
     close()
     if type(html) ~= "string" then return nil, "读不出该章节内容" end
-    return Moon.plain_text(html)
+    return Moon.blocks_from_html(html)
 end
 
 -- 主流程:取回 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
@@ -184,24 +185,32 @@ function Moonsync.import_from_moon(plugin)
     end
 
     local doc = plugin.ui.document
-    local section, serr = Moonsync.section_text(doc.file, po.star)
-    if not section then
-        show("墨桥：读不出这本书的对应章节（" .. tostring(serr) .. "）。")
+    local blocks, berr = Moonsync.section_blocks(doc.file, po.star)
+    if not blocks then
+        show("墨桥：读不出这本书的对应章节（" .. tostring(berr) .. "）。")
         return
     end
 
-    local snippet = Moon.snippet(section, po.hash, Moonsync.SNIPPET_LEN)
-    if not snippet or Moon.utf8_len(snippet) < 6 then
-        show("墨桥：静读天下的位置在本机定位不到（两边的章节结构可能不同）。")
+    -- 片段必须落在同一段内 —— 渲染出来的正文在段与段之间是断开的,
+    -- 跨段片段全文搜索永远搜不到(这正是上一版掉进百分比兜底的原因)。
+    local snippet = Moon.snippet_in_blocks(blocks, po.hash, Moonsync.SNIPPET_LEN)
+    if not snippet then
+        show(string.format(
+            "墨桥：静读天下的位置在本机定位不到（章内偏移 %d，本章共 %d 段）。",
+            po.hash, #blocks))
         return
     end
 
-    -- 复用已有机制:文本锚点 + 内容比例消歧 + 询问用户 + 展示定位方式
+    -- 复用已有机制:文本锚点 + 内容比例消歧 + 询问用户 + 展示定位方式。
+    --
+    -- **不要**传 percent:静读天下的 `:%` 是"内容比例",而 percent 在跳转里被当成
+    -- "页数比例"去换算页码 —— 直接传会落到完全不同的位置(实测踩过这个坑)。
+    -- 内容比例只用于搜索命中时的消歧(pos_percent);搜索不命中就如实报错,
+    -- 不碰任何兜底,免得"跳到一个错误的位置"比"报错"更糟。
     local ok_jump, jerr = pcall(function()
         WebDAV.confirm_jump(plugin, {
             text_anchor  = snippet,
             pos_percent  = po.pct / 100,
-            percent      = po.pct / 100,
             device_label = "静读天下",
         })
     end)

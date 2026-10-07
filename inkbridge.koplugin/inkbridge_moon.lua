@@ -208,4 +208,66 @@ function Moon.build_url(address, root, dir, filename)
     return addr .. folder .. "/" .. Moon.uri_escape(filename)
 end
 
+-- ── 章节拆块与"可搜索片段" ────────────────────────────────────────────────
+
+local BLOCK_TAGS = {
+    p = true, div = true, li = true, blockquote = true,
+    h1 = true, h2 = true, h3 = true, h4 = true, h5 = true, h6 = true,
+}
+
+-- 把一章 HTML 拆成「块级文本」数组。
+--
+-- 口径必须与静读天下一致:按文档顺序累加各块文本、块内去掉所有空白。
+-- 这里用**手写扫描**而不是模式里的选择分支 —— Lua 模式没有 `|`,无法一次匹配多种标签。
+-- 做法是:找到每个开标签,再找它**第一个**同名的闭合标签,取出其中文字,然后从闭合标签之后继续。
+-- 外层 div 因此只吞到它自己的第一个 </div>(通常是那张空的 logo 图),不会重复计算内层文字。
+function Moon.blocks_from_html(html)
+    local blocks = {}
+    local pos, len = 1, #html
+    while pos <= len do
+        local s, e, name = html:find("<(%a[%w]*)[^>]*>", pos)
+        if not s then break end
+        name = name:lower()
+        if BLOCK_TAGS[name] then
+            local close_s, close_e = html:find("</" .. name .. ">", e + 1, true)  -- 纯文本查找
+            if close_s then
+                local text = Moon.plain_text(html:sub(e + 1, close_s - 1))
+                if text ~= "" then blocks[#blocks + 1] = text end
+                pos = close_e + 1
+            else
+                pos = e + 1          -- 没有闭合标签:跳过这个开标签
+            end
+        else
+            pos = e + 1
+        end
+    end
+    return blocks
+end
+
+-- 取出该章内偏移处的一小段文字,用于在 KOReader 里全文搜索定位。
+--
+-- **关键:片段必须落在同一个块内。** 之前是从"整章去空白后的连续文本"里切的,
+-- 片段可能横跨两段;而渲染出来的正文在段与段之间是断开的,全文搜索必然搜不到 ——
+-- 实测表现就是"搜索没命中、掉到百分比兜底、落点差很远"。
+-- 若该位置离块尾太近(取不满 6 个字),就在块内往前借几个字;仍不够则返回 nil
+-- (宁可如实报"定位不到",也不要拿一个搜不到的片段去碰运气)。
+function Moon.snippet_in_blocks(blocks, offset, want)
+    want = want or 20
+    local idx, off = Moon.locate(blocks, offset)
+    if not idx then return nil end
+    local text = blocks[idx]
+    local n = Moon.utf8_len(text)
+    if off >= n then return nil end
+
+    local start = off
+    local take = math.min(want, n - start)
+    if take < 6 and start > 0 then
+        local borrow = math.min(6 - take, start)
+        start = start - borrow
+        take = take + borrow
+    end
+    if take < 6 then return nil end
+    return Moon.utf8_sub(text, start + 1, take)
+end
+
 return Moon
