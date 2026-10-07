@@ -146,7 +146,7 @@ do
                             "learn_book_ref", "request", "backup_po", "import_from_moon",
                             "push_to_moon", "_do_push", "build_push_job", "auto_push",
                             "auto_enabled", "set_auto", "local_position", "describe_direction",
-                            "peek_po", "peek_label" }) do
+                            "peek_po", "peek_label", "format_time" }) do
         check("导出 " .. name, type(MS[name]) == "function")
     end
 end
@@ -478,11 +478,18 @@ do
     eq("取不到数据时的文案", MS.peek_label(nil, 1000), "静读天下：无数据")
     eq("缺字段也当无数据", MS.peek_label({}, 1000), "静读天下：无数据")
 
+    local t = MS.format_time(1000)
+    check("format_time 是「月-日 时:分」",
+          type(t) == "string" and t:match("^%d%d%-%d%d %d%d:%d%d$") ~= nil, t)
+    eq("format_time(nil) 返回 nil", MS.format_time(nil), nil)
+
     local peek = { po = { star = 167, hash = 200, pct = 62.0 }, modified = 1000 }
-    eq("百分比 + 新鲜度", MS.peek_label(peek, 1000 + 180), "静读天下 · 62.0% · 3 分钟前")
-    eq("有本机位置时给出方向(用于判断新旧)",
+    eq("绝对时间（相对时间）+ 百分比",
+       MS.peek_label(peek, 1000 + 180),
+       string.format("静读天下 · %s（3 分钟前） · 62.0%%", t))
+    eq("有本机位置时再给方向",
        MS.peek_label(peek, nil, { section = 167, hash = 100 }),
-       "静读天下 · 62.0% · 比本机晚 100 字，是前进")
+       string.format("静读天下 · %s · 62.0%% · 比本机晚 100 字，是前进", t))
     eq("没有服务器时间就省掉那一段",
        MS.peek_label({ po = { star = 0, hash = 0, pct = 12.8 } }, 1000), "静读天下 · 12.8%")
 end

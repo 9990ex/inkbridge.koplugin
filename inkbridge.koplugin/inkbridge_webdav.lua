@@ -428,6 +428,57 @@ function WebDAV.list_history(plugin, prefix, callback)
     if not dispatched then finish(false, nil, tostring(err)) end
 end
 
+-- 列出一个**任意目录**(只读元数据,不下载内容),把文件项交给回调。
+--
+-- 为什么需要它:静读天下的 .po 不在当前 server.url 的历史记录里,要单独列它那个目录,
+-- 才能拿到**服务器时间**(列表项自带的 modification,Unix 秒)—— 这正是 KO 记录
+-- 时间戳的来源。之前去解析 HTTP 的 Last-Modified 响应头,真机上取不到,所以改走这条
+-- 已经验证可用的路。列表只读元数据,**不消耗网盘的下载额度**。
+--
+-- folder_path 以 "/" 开头表示从服务器根算起,否则相对 server.url。
+function WebDAV.list_folder(plugin, folder_path, callback)
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then
+        callback(false, nil, "WebDAV destination is not configured")
+        return
+    end
+    local ui = plugin.ui
+    local manager = ui and ui.cloudstorage
+    local providers = manager and manager.providers
+    local provider = providers and providers.webdav
+    if not provider or type(provider.run) ~= "function"
+            or type(provider.listFolder) ~= "function" then
+        callback(false, nil, "KOReader WebDAV provider is unavailable")
+        return
+    end
+
+    local old_base = provider.base
+    provider.base = provider_base(server)
+    local finished = false
+    local function finish(ok, items, err)
+        if finished then return end
+        finished = true
+        provider.base = old_base
+        callback(ok, items, err)
+    end
+
+    local function request()
+        local ok, result = pcall(function()
+            return provider.listFolder(folder_path or "", true)
+        end)
+        if not ok then finish(false, nil, tostring(result)); return end
+        -- listFolder 在网络/认证/HTTP 出错时可能返回 nil，不能等同于空目录
+        if type(result) ~= "table" then finish(false, nil, "WebDAV list failed"); return end
+        local out = {}
+        for _, item in ipairs(result) do
+            if item.is_file then out[#out + 1] = item end
+        end
+        finish(true, out, nil)
+    end
+    local dispatched, err = pcall(provider.run, request)
+    if not dispatched then finish(false, nil, tostring(err)) end
+end
+
 -- 显示可读的历史记录列表。只显示最近三条，具体跳转仍由用户确认。
 -- extra(可选)是一条**不属于 KO 记录**的附加项(例如静读天下的 .po):
 --   { text = "静读天下 · 第 168 章 · 8 分钟前", on_select = function() ... end }

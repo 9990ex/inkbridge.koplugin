@@ -197,15 +197,21 @@ end
 --   root     当前 WebDAV 目标所在目录(server.url)
 --   dir      静读天下目录:相对 root;以 "/" 开头则从服务器根算起
 --   filename 文件名
-function Moon.build_url(address, root, dir, filename)
-    local addr = tostring(address or ""):gsub("/+$", "")
+-- 把"当前 WebDAV 目标目录"与"某个子目录"合成完整目录路径。
+-- 以 "/" 开头表示从服务器根算起,否则相对 root。
+-- build_url 也用它,保证"取时间用的目录"与"取文件用的 URL"永远一致。
+function Moon.build_folder(root, dir)
     local folder = Moon.normalize_dir(dir, "")
     if folder:sub(1, 1) ~= "/" then
         local base = tostring(root or ""):gsub("^/+", ""):gsub("/+$", "")
         folder = "/" .. (base == "" and folder or (base .. "/" .. folder))
     end
-    folder = folder:gsub("//+", "/")
-    return addr .. folder .. "/" .. Moon.uri_escape(filename)
+    return (folder:gsub("//+", "/"))
+end
+
+function Moon.build_url(address, root, dir, filename)
+    local addr = tostring(address or ""):gsub("/+$", "")
+    return addr .. Moon.build_folder(root, dir) .. "/" .. Moon.uri_escape(filename)
 end
 
 -- ── 章节拆块与"可搜索片段" ────────────────────────────────────────────────

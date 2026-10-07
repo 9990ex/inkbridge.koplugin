@@ -699,40 +699,35 @@ function Moonsync.peek_po(plugin, callback)
     if not filename then callback(nil); return end
 
     local url = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
-    local code, _, body, _, headers = Moonsync.request(server, url, "GET")
+    local code, _, body = Moonsync.request(server, url, "GET")
     if not code or tonumber(code) ~= 200 or type(body) ~= "string" or body == "" then
         callback(nil); return
     end
     local po = Moon.parse(body)
     if not po then callback(nil); return end
 
-    -- Last-Modified 是 RFC1123 字符串。转换用 KOReader 自己的函数
-    -- (frontend/datetime.lua:322,是**模块函数**,点号调用)。
-    -- 注意它用 os.time{} 把 GMT 当**本地时间**解释,所以要减掉本地相对 UTC 的偏移,
-    -- 否则东八区下"刚写出去的文件"会显示成"8 小时前"。
-    -- 转不出来就退化成"没有新鲜度"——它只是显示用,不该影响判断。
-    local modified
-    local hdr = type(headers) == "table"
-        and (headers["last-modified"] or headers["Last-Modified"]) or nil
-    if type(hdr) == "string" then
-        local ok_dt, datetime = pcall(require, "datetime")
-        if ok_dt and datetime then
-            local parsed
-            for _, fn in ipairs({ "stringRFC1123ToSeconds", "stringISO8601ToSeconds",
-                                  "stringRFC3659ToSeconds" }) do
-                if datetime[fn] then
-                    local ok_s, s = pcall(datetime[fn], hdr)
-                    if ok_s and tonumber(s) then parsed = tonumber(s); break end
+    -- 时间从**目录列表**里取(服务器时间,Unix 秒)—— 和 KO 记录时间戳同一套机制。
+    -- 之前去解析 HTTP 的 Last-Modified 响应头,真机上取不到,所以换掉。
+    WebDAV.list_folder(plugin, Moon.build_folder(server.url, Moonsync.get_dir()),
+                       function(ok, items)
+        local modified
+        if ok and type(items) == "table" then
+            for _, item in ipairs(items) do
+                if item.text == filename then
+                    modified = tonumber(item.modification)
+                    break
                 end
             end
-            if parsed then
-                local offset = os.difftime(os.time(), os.time(os.date("!*t")))
-                modified = parsed - (tonumber(offset) or 0)
-            end
         end
-    end
+        callback({ po = po, url = url, filename = filename, modified = modified })
+    end)
+end
 
-    callback({ po = po, url = url, filename = filename, modified = modified })
+-- 服务器时间(Unix 秒) → 「10-07 19:24」。纯函数,便于测试。
+function Moonsync.format_time(seconds)
+    local s = tonumber(seconds)
+    if not s then return nil end
+    return os.date("%m-%d %H:%M", s)
 end
 
 -- 下载列表里那一行怎么写(纯函数,便于测试)。
@@ -749,6 +744,18 @@ function Moonsync.peek_label(peek, now, local_pos)
     end
     local parts = { "静读天下" }
 
+    -- 时间放最前面:用户最想知道的是"这条记录什么时候生成的"。
+    -- 绝对时间 + 相对时间都给 —— 前者回答"什么时候",后者回答"新不新"。
+    if peek.modified then
+        local abs = Moonsync.format_time(peek.modified)
+        local ago = now and WebDAV.human_age(now - peek.modified) or nil
+        if abs and ago then
+            parts[#parts + 1] = string.format("%s（%s）", abs, ago)
+        elseif abs then
+            parts[#parts + 1] = abs
+        end
+    end
+
     local pct = tonumber(peek.po.pct)
     if pct then parts[#parts + 1] = string.format("%.1f%%", pct) end
 
@@ -758,9 +765,6 @@ function Moonsync.peek_label(peek, now, local_pos)
         if dir then parts[#parts + 1] = dir end
     end
 
-    if peek.modified and now then
-        parts[#parts + 1] = WebDAV.human_age(now - peek.modified)
-    end
     return table.concat(parts, " · ")
 end
 
