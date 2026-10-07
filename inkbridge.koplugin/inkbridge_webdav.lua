@@ -537,8 +537,16 @@ function WebDAV.confirm_jump(plugin, remote)
         page     = "页码（固定版式）",
         percent  = "页数比例换算（近似）",
     }
+    -- 静读天下那条路进来的是 pos_percent(内容比例,≈62%),没有 percent(页数比例)。
+    -- 以前这里只读 percent,于是确认框里永远显示「远端阅读位置：0.00%」—— 实测踩到。
+    local shown_pct = tonumber(remote.percent)
+    local pct_note  = ""
+    if not shown_pct then
+        shown_pct = tonumber(remote.pos_percent)
+        pct_note  = "（内容比例）"
+    end
     local lines = {
-        string.format("远端阅读位置：%.2f%%", (tonumber(remote.percent) or 0) * 100),
+        string.format("远端阅读位置：%.2f%%%s", (shown_pct or 0) * 100, pct_note),
     }
     if remote.page and remote.total_pages then
         table.insert(lines, string.format("远端设备：第 %s / %s 页",
