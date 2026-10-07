@@ -545,6 +545,69 @@ do
     check("仍然完成规划", ok and plan ~= nil and plan.method == "text")
 end
 
+-- ── 「只配了一台服务器就直接进目录」的捷径 ───────────────────────────────
+-- 这条捷径必须**只赢不输**:只有恰恰好一台服务器时才接管,
+-- 其余任何情况(零台/两台/没有云存储/内部抛异常)都要安静退回原来的流程。
+print("== 单服务器捷径:存储路径自适应 ==")
+do
+    local function fake_manager(servers)
+        return {
+            servers = servers,
+            loaded  = false,
+            opened  = nil,
+            loadSettings = function(self) self.loaded = true end,
+            openCloudServer = function(self, url, cb, do_show)
+                self.opened = { url = url, cb = cb, do_show = do_show }
+            end,
+        }
+    end
+
+    -- 恰好一台:接管,并直接打开它的目录浏览
+    local m = fake_manager({ { name = "坚果云", url = "https://dav/" } })
+    local saved
+    local handled = WebDAV.start_dir_pick_on_single_server(
+        { ui = { cloudstorage = m } }, function(s) saved = s end)
+    check("一台服务器时接管", handled == true)
+    check("先刷新过服务器列表", m.loaded == true)
+    eq("直接打开那台服务器", m.opened and m.opened.url, "https://dav/")
+    eq("按下标 1 初始化", m.server_idx, 1)
+    check("回调走字段、不走参数（异步时序下传参会丢）",
+          m.opened and m.opened.cb == nil
+          and type(m.caller_choose_folder_callback) == "function")
+
+    -- 触发它自己的回调:要转交给调用方,并且**立刻把自己清掉**
+    m.caller_choose_folder_callback({ name = "坚果云", url = "https://dav/" })
+    eq("回调转交成功", saved and saved.url, "https://dav/")
+    eq("用完立刻清掉（免得以后从文件管理器长按目录时误触发）",
+       m.caller_choose_folder_callback, nil)
+
+    -- 两台:不接管,交给原来的"列服务器"流程
+    local m2 = fake_manager({ { url = "a" }, { url = "b" } })
+    eq("两台服务器时不接管",
+       WebDAV.start_dir_pick_on_single_server({ ui = { cloudstorage = m2 } },
+                                              function() end), false)
+    eq("而且什么都没打开", m2.opened, nil)
+
+    -- 零台:也不接管 —— 用户还需要那个列表来新建服务器
+    local m3 = fake_manager({})
+    eq("没有服务器时不接管",
+       WebDAV.start_dir_pick_on_single_server({ ui = { cloudstorage = m3 } },
+                                              function() end), false)
+
+    -- 没有云存储 manager / plugin 为空:不接管、也不报错
+    eq("没有云存储时不接管",
+       WebDAV.start_dir_pick_on_single_server({ ui = {} }, function() end), false)
+    eq("plugin 为空也不报错",
+       WebDAV.start_dir_pick_on_single_server(nil, function() end), false)
+
+    -- 内部抛异常:必须吃掉异常并返回 false(捷径不能变成故障点)
+    local m4 = fake_manager({ { url = "https://dav/" } })
+    m4.openCloudServer = function() error("boom") end
+    eq("openCloudServer 抛异常时返回 false",
+       WebDAV.start_dir_pick_on_single_server({ ui = { cloudstorage = m4 } },
+                                              function() end), false)
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end
 print("全部通过。")

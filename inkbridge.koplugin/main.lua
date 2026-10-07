@@ -335,7 +335,7 @@ end
 function InkBridge:_webdav_menu()
     return {
         { text = "墨桥同步目录",
-          help_text = "选一台云服务器，再选墨桥进度存放的目录",
+          help_text = "墨桥进度存放的目录（配了多台服务器时先选服务器）",
           callback = function() WebDAV.pick_server(self) end },
         { text = "静读天下同步目录",
           help_text = "相对上面那个目录；以 / 开头表示从服务器根算起",

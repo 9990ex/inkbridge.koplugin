@@ -156,14 +156,63 @@ local function is_inkbridge_record(name, prefix)
 end
 
 -- 打开 KOReader 的 WebDAV 目标选择界面，并保存用户选中的 server table。
+-- 只配了一台云服务器时,跳过"选服务器"那一步,直接进它的目录浏览。
+--
+-- 为什么值得做:只有一台服务器时,那个列表里只有一项 —— 点进去等于白点一次。
+--
+-- 依据:KOReader 自己的 CloudStorage:show() 就是这么跳过根列表的
+-- (plugins/cloudstorage.koplugin/cloudstorage.lua:154-162,借 default_server)。
+-- 这里**刻意不碰 default_server** —— 那是用户的设置,改了会影响他以后的行为。
+--
+-- "选目录"这一步省不掉:云浏览器里必须用户自己长按目录(cloudstorage.lua:241-245)。
+--
+-- 返回 true 表示已接管(进了目录浏览);false 表示调用方照旧走"列服务器"流程。
+-- **任何一步不顺都返回 false** —— 这条捷径只该是优化,不该成为新的故障点。
+function WebDAV.start_dir_pick_on_single_server(plugin, on_saved)
+    local ok_all, handled = pcall(function()
+        local ui = plugin and plugin.ui
+        local manager = ui and ui.cloudstorage
+        if not manager or not is_callable(manager.openCloudServer) then return false end
+
+        -- 刷新 manager.servers(它平时只在云存储界面被打开时才加载)
+        if is_callable(manager.loadSettings) then
+            pcall(function() manager:loadSettings() end)
+        end
+        local servers = manager.servers
+        if type(servers) ~= "table" or #servers ~= 1 then return false end
+        local url = servers[1] and servers[1].url
+        if type(url) ~= "string" then return false end
+
+        manager.server_idx = 1
+        -- 用 caller_choose_folder_callback 字段而不是 openCloudServer 的第 2 个参数:
+        -- 它是在**异步回调里**才被读的(cloudstorage.lua:169),传参有可能在那个时序下丢失;
+        -- 写字段则确定生效。
+        manager.caller_choose_folder_callback = function(server)
+            -- 用完立刻清掉:否则以后用户从文件管理器正常浏览云盘、长按目录时,
+            -- 会再次触发我们这个回调,弹出一句莫名其妙的"墨桥…已保存"。
+            manager.caller_choose_folder_callback = nil
+            on_saved(server)
+        end
+        manager:openCloudServer(url, nil, true)
+        return true
+    end)
+    if not ok_all then return false end
+    return handled == true
+end
+
 function WebDAV.pick_server(plugin)
+    local function save(server)
+        plugin.server = server
+        G_reader_settings:saveSetting("inkbridge_webdav_server", server)
+        show("墨桥：云同步目标已保存。")
+    end
+
+    -- 捷径:只配了一台服务器 → 直接进它的目录浏览
+    if WebDAV.start_dir_pick_on_single_server(plugin, save) then return end
+
     local ui = plugin.ui
     if ui and ui.cloudstorage and is_callable(ui.cloudstorage.onShowCloudStorageList) then
-        ui.cloudstorage:onShowCloudStorageList(function(server)
-            plugin.server = server
-            G_reader_settings:saveSetting("inkbridge_webdav_server", server)
-            show("墨桥：WebDAV 目标已保存。")
-        end)
+        ui.cloudstorage:onShowCloudStorageList(save)
         return
     end
     local ok, SyncService = pcall(require, "apps/cloudstorage/syncservice")
@@ -177,11 +226,7 @@ function WebDAV.pick_server(plugin)
         return
     end
     local picker = SyncService:new{}
-    picker.onConfirm = function(server)
-        plugin.server = server
-        G_reader_settings:saveSetting("inkbridge_webdav_server", server)
-        show("墨桥：WebDAV 目标已保存。")
-    end
+    picker.onConfirm = save
     UIManager:show(picker)
 end
 
