@@ -127,10 +127,12 @@ function Moonsync.section_text(epub_path, section_index)
     -- manifest: id → href   注意两点:
     --   * "<item%s" 不会匹配到 <itemref(要求 "item" 后面跟空白);
     --   * 属性引号两种都要认 —— 有的书用单引号。
+    --     (不要用 [[...]] 长字符串写这两个模式:内容里的 "]" 会与结束符的 "]" 相邻,
+    --      长字符串会提前闭合,导致语法错误。)
     local manifest = {}
     for tag in opf:gmatch("<item%s[^>]*>") do
-        local id   = tag:match([[id=["']([^"']+)["']]])
-        local href = tag:match([[href=["']([^"']+)["']]])
+        local id   = tag:match("id=[\"']([^\"']+)[\"']")
+        local href = tag:match("href=[\"']([^\"']+)[\"']")
         if id and href then manifest[id] = href end
     end
 
@@ -138,7 +140,7 @@ function Moonsync.section_text(epub_path, section_index)
     -- 但若按扩展名筛完一个都不剩(说明本书命名超出预期),退回未筛选的完整 spine:
     -- 宁可索引可能错位,也不要整本书都读不了。
     local spine_all, spine_html = {}, {}
-    for idref in opf:gmatch([[<itemref[^>]*idref=["']([^"']+)["']]]) do
+    for idref in opf:gmatch("<itemref[^>]*idref=[\"']([^\"']+)[\"']") do
         local href = manifest[idref]
         if href then
             spine_all[#spine_all + 1] = href
