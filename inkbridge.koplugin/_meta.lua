@@ -8,5 +8,5 @@
 return {
     fullname = "InkBridge / 墨桥",
     description = "通过 WebDAV 在 KOReader 与静读天下之间同步阅读位置的插件",
-    version = "0.3.0",
+    version = "0.3.1-alpha",
 }

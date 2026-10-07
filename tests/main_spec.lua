@@ -165,7 +165,8 @@ do
     local prefix = name:match("^(.-)%-%d%d%d%d%-%d%d%d%d%d%d%-") or ""
     eq("书名截断到 40 个字符", State._utf8_len(prefix), 40)
     local label = name:match("%-%d%d%d%d%-%d%d%d%d%d%d%-(.-)%.deadbeef")
-    eq("设备名截断到 16 个字符", State._utf8_len(label or ""), 16)
+    eq("设备名截断到 DEVICE_LABEL_MAX 个字符", State._utf8_len(label or ""),
+       InkBridge.DEVICE_LABEL_MAX)
 end
 
 do
@@ -438,6 +439,81 @@ do
     end)
     check("派发崩掉也不抛异常", ok11)
     eq("  仍然回调(计数 0)", called, true)
+end
+
+-- ============================================================================
+print("== 8. 设备名默认值（读设备型号）==")
+-- ============================================================================
+-- 设备名写进云端记录的文件名,而记录靠**设备名**区分来源 ——
+-- 默认值全都一样的话,几台设备的记录会被当成同一台。
+-- 探测有四个分支(安卓 / 通用 model / info() / 都没有),真机上只能碰运气遇到。
+do
+    local function with_device(dev, android)
+        package.preload["device"]  = dev     and function() return dev end     or nil
+        package.preload["android"] = android and function() return android end or nil
+        package.loaded["device"]   = nil
+        package.loaded["android"]  = nil
+        return InkBridge._detect_device_model()
+    end
+
+    eq("Kindle:直接用 Device.model", with_device({ model = "KindlePaperWhite6" }), "KindlePaperWhite6")
+    eq("Scribe 也是", with_device({ model = "KindleScribe" }), "KindleScribe")
+    eq("Kobo 的型号带前缀", with_device({ model = "Kobo_luna" }), "Kobo_luna")
+
+    -- 安卓:优先 android.prop.model(手机"设置→关于"里那个),它比 KOReader 用的
+    -- android.prop.product(ro.product.name,常常只是代号)更好认
+    eq("安卓:优先营销型号",
+       with_device({ model = "PJZ110" }, { prop = { model = "OnePlus 13", product = "PJZ110" } }),
+       "OnePlus 13")
+    eq("安卓:没有 prop.model 时退回 Device.model",
+       with_device({ model = "PJZ110" }, { prop = { product = "PJZ110" } }), "PJZ110")
+    eq("安卓:prop 不是表也不炸",
+       with_device({ model = "android-arm64" }, { prop = "坏数据" }), "android-arm64")
+
+    -- 有些平台只给 :info()
+    eq("没有 model 字段时试 info()",
+       with_device({ info = function() return "PB1040" end }), "PB1040")
+    eq("info() 抛异常时不留半个名字",
+       with_device({ info = function() error("boom") end }), nil)
+
+    -- 都拿不到:返回 nil,由调用方决定退回什么
+    eq("没有 device 模块", with_device(nil), nil)
+    eq("model 是 nil", with_device({}), nil)
+    eq("model 是空串", with_device({ model = "" }), nil)
+    eq("model 不是字符串", with_device({ model = 123 }), nil)
+
+    package.preload["device"], package.preload["android"] = nil, nil
+    package.loaded["device"], package.loaded["android"] = nil, nil
+end
+
+-- ============================================================================
+print("== 9. 设备名长度上限（不能把两台设备截成同一个）==")
+-- ============================================================================
+do
+    local function name_for(label)
+        local p = new_plugin({ device_label = label })
+        return p:_history_name({ book_id = "deadbeefcafe1234", book_name = "书",
+                                 updated_at = 1760000000 })
+    end
+
+    -- ★ 这两台都是真实机型。上限若是 16,截断后都会变成 "KindlePaperWhit",
+    -- 云端就会把它们当成**同一台设备** —— 选更新只挑一条、保留策略共用一个桶。
+    local a = name_for("KindlePaperWhite5SE")
+    local b = name_for("KindlePaperWhite6")
+    contains("长型号完整保留", a, "-KindlePaperWhite5SE.deadbeef.InkBridge.txt")
+    check("两种机型不会被截成同一个名字", a ~= b, a .. " vs " .. b)
+    eq("上限是 32", InkBridge.DEVICE_LABEL_MAX, 32)
+
+    -- 截断仍然按**字符**算:汉字不能被劈成半个
+    local utf8_len = State._utf8_len
+    local long = name_for(string.rep("长", 100))
+    local label = long:match("%-%d%d%d%d%-%d%d%d%d%d%d%-(.-)%.deadbeef")
+    eq("超长名字按字符截到 32", utf8_len(label or ""), 32)
+
+    -- 设备名里的非法字符照样要清掉(安卓型号可能带空格/斜杠)
+    local weird = name_for("OnePlus 13/LE2110")
+    check("非法字符被替换", weird:find("/", 1, true) == nil, weird)
+    contains("空格保留(文件名允许)", weird, "OnePlus 13_LE2110")
 end
 
 -- 收尾：清掉测试用的设置目录

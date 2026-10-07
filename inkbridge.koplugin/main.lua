@@ -41,6 +41,45 @@ local function safe_filename_component(value, fallback, max_chars)
     return State._utf8_sub(value, max_chars or 40)
 end
 
+-- 设备名默认值:尽量读**设备型号**,读不到才退回 "KOReader"。
+--
+-- 为什么值得自动:设备名会写进云端记录的文件名,而云端记录正是靠**设备名**
+-- 区分来源的(_record_device / select_updates)。默认值全都一样的话,
+-- 几台设备的记录就分不开了 —— 选更新会当成同一台,云端保留策略也会算进同一个桶。
+--
+-- 取值顺序:
+--   1. Android:先试 android.prop.model(ro.product.model,手机"设置→关于"里那个)。
+--      KOReader 自己的 Device.model 用的是 android.prop.product(ro.product.name),
+--      常常只是代号(一加 13 可能是 "PJZ110")。两个都能区分设备,但前者更好认;
+--   2. 其它平台:Device.model —— Kindle 会给出很细的型号(KindlePaperWhite6 /
+--      KindleScribe),Kobo 给出 Kobo_luna 这种;
+--   3. 都拿不到 → "KOReader"。
+--
+-- 整段 pcall 包住:拿不到型号只是名字不好听,**绝不能让插件起不来**。
+-- 型号不好看时用户可以自己改(见 set_device_label)。
+local function detect_device_model()
+    local ok_dev, dev = pcall(require, "device")
+    if ok_dev and type(dev) == "table" then
+        local ok_a, android = pcall(require, "android")
+        if ok_a and type(android) == "table" and type(android.prop) == "table" then
+            local nice = android.prop.model
+            if type(nice) == "string" and nice ~= "" then return nice end
+        end
+
+        local model = dev.model
+        if type(model) ~= "string" and type(dev.info) == "function" then
+            local ok_i, got = pcall(dev.info, dev)
+            if ok_i then model = got end
+        end
+        if type(model) == "string" and model ~= "" then return model end
+    end
+    return nil
+end
+
+-- 暴露出来只为**可测试**:型号探测有一堆分支(安卓 / 通用 / info() / 都没有),
+-- 而这些分支在真机上只能碰运气遇到。前面加下划线表示"不是给别的模块用的"。
+InkBridge._detect_device_model = detect_device_model
+
 -- 插件初始化：读取设备身份和已经保存的 WebDAV 配置。
 function InkBridge:init()
     self.device_id = G_reader_settings:readSetting("inkbridge_device_id")
@@ -48,7 +87,15 @@ function InkBridge:init()
         self.device_id = tostring(os.time()) .. "-" .. tostring(math.random(1000, 9999))
         G_reader_settings:saveSetting("inkbridge_device_id", self.device_id)
     end
-    self.device_label = G_reader_settings:readSetting("inkbridge_device_label", "KOReader")
+
+    -- 设备名:**只有用户自己设过**才用它,否则自动读型号。
+    -- init 里刻意不给 readSetting 传默认值 —— 传了"KOReader"就等于替用户设了一次,
+    -- 从此再也走不到自动检测(老用户会永远卡在那个假默认值上)。
+    self.device_label = G_reader_settings:readSetting("inkbridge_device_label")
+    if not self.device_label or self.device_label == "" then
+        self.device_label = detect_device_model() or "KOReader"
+    end
+
     self.server = G_reader_settings:readSetting("inkbridge_webdav_server")
 
     -- 仅仅被 PluginLoader 识别，还不会自动出现在阅读菜单里。
@@ -106,31 +153,46 @@ end
 --                .json 之类默认根本不显示（除非打开 show_unsupported）。
 function InkBridge:_history_name(entry)
     local timestamp = os.date("%m%d-%H%M%S", tonumber(entry.updated_at) or os.time())
-    local device_label = safe_filename_component(self.device_label, "KOReader", 16)
+    local device_label = safe_filename_component(self.device_label, "KOReader",
+                                                 InkBridge.DEVICE_LABEL_MAX)
     local name = safe_filename_component(entry.book_name, "book", 40)
     return name .. "-" .. timestamp .. "-" .. device_label
         .. "." .. self:_history_prefix(entry) .. ".InkBridge.txt"
 end
 
+-- 设备名最长多少字符。**别改小**:Kindle 的型号名很长 ——
+-- KindlePaperWhite5SE 与 KindlePaperWhite6 截断到 16 位会都变成
+-- "KindlePaperWhit",两台不同设备就撞成同一台了(记录靠设备名区分来源)。
+InkBridge.DEVICE_LABEL_MAX = 32
+
+-- 设备名会写进云端记录的文件名,所以这里必须按**字符**截断(State._utf8_sub):
+-- 按字节截断会把一个汉字劈成半个,生成非法 UTF-8 文件名。
 function InkBridge:set_device_label()
+    local auto = detect_device_model() or "KOReader"
     local dialog
     dialog = InputDialog:new{
         title = "修改设备名称",
-        description = "设备名称会显示在云端历史记录文件名中。",
-        input = self.device_label or "KOReader",
+        description = "设备名称会显示在云端历史记录的文件名中，用来区分是**哪台设备**"
+            .. "上传的 —— 两台设备同名的记录会被当成同一台。\n"
+            .. "本机读到的型号：" .. auto .. "\n"
+            .. "留空并保存 = 恢复用型号自动命名。",
+        input = self.device_label or auto,
         buttons = {{
             { text = "取消", callback = function() UIManager:close(dialog) end },
             { text = "保存", is_enter_default = true, callback = function()
                 local label = dialog:getInputText()
                 label = label and label:gsub("^%s+", ""):gsub("%s+$", "") or ""
-                if label ~= "" then
+                UIManager:close(dialog)
+                if label == "" then
+                    -- 留空 = 交回给自动命名。必须**删掉**设置项,不能存成 "KOReader",
+                    -- 否则下次 init 走不到自动检测。
+                    G_reader_settings:delSetting("inkbridge_device_label")
+                    self.device_label = auto
+                    show("墨桥：已恢复用设备型号命名 —— " .. auto)
+                else
                     self.device_label = label
                     G_reader_settings:saveSetting("inkbridge_device_label", label)
-                    UIManager:close(dialog)
                     show("墨桥：设备名称已保存。")
-                else
-                    UIManager:close(dialog)
-                    show("墨桥：设备名称不能为空。")
                 end
             end },
         }},
@@ -504,7 +566,9 @@ end
 -- 高级选项:低频设置全部收在这里,一级只留"上传/下载"两个动作。
 function InkBridge:_advanced_menu()
     return {
-        { text = "修改设备名称", callback = function() self:set_device_label() end },
+        { text = "修改设备名称（当前：" .. tostring(self.device_label or "KOReader") .. "）",
+          help_text = "默认自动读设备型号；两台设备同名会导致记录被当成同一台",
+          callback = function() self:set_device_label() end },
         { text = "打开书时自动核对云端更新",
           help_text = "只在你已经联网时检查；不会自己开 Wi-Fi",
           checked_func = function() return self:auto_check_enabled() end,
