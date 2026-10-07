@@ -478,11 +478,13 @@ do
     eq("取不到数据时的文案", MS.peek_label(nil, 1000), "静读天下：无数据")
     eq("缺字段也当无数据", MS.peek_label({}, 1000), "静读天下：无数据")
 
-    local peek = { po = { star = 167 }, modified = 1000 }
-    eq("带新鲜度的一行",
-       MS.peek_label(peek, 1000 + 180), "静读天下 · 第 168 章 · 3 分钟前")
-    eq("没有服务器时间时省掉那一段",
-       MS.peek_label({ po = { star = 0 } }, 1000), "静读天下 · 第 1 章")
+    local peek = { po = { star = 167, hash = 200, pct = 62.0 }, modified = 1000 }
+    eq("百分比 + 新鲜度", MS.peek_label(peek, 1000 + 180), "静读天下 · 62.0% · 3 分钟前")
+    eq("有本机位置时给出方向(用于判断新旧)",
+       MS.peek_label(peek, nil, { section = 167, hash = 100 }),
+       "静读天下 · 62.0% · 比本机晚 100 字，是前进")
+    eq("没有服务器时间就省掉那一段",
+       MS.peek_label({ po = { star = 0, hash = 0, pct = 12.8 } }, 1000), "静读天下 · 12.8%")
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

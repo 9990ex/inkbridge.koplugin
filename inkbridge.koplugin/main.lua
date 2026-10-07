@@ -215,7 +215,7 @@ function InkBridge:_sync(entry, mode)
             -- 一项凭空消失比"明确告诉你没有"更让人困惑。
             Moonsync.peek_po(self, function(peek)
                 local extra = {
-                    text = Moonsync.peek_label(peek, os.time()),
+                    text = Moonsync.peek_label(peek, os.time(), Moonsync.local_position(self)),
                     on_select = function()
                         if peek then
                             Moonsync.import_from_moon(self)
@@ -565,7 +565,10 @@ function InkBridge:_auto_check_moon(entry)
         if G_reader_settings:readSetting(key) == fp then return end   -- 没变过
 
         local pos = Moonsync.local_position(self)
-        local same_place = pos and pos.section == tonumber(peek.po.star)
+        -- 算不出本机偏移时**不下结论、也不提示**:宁可不打扰,
+        -- 也不要因为"分不清是不是自己刚写的"而反复弹窗。
+        if not pos or not tonumber(pos.hash) then return end
+        local same_place = pos.section == tonumber(peek.po.star)
             and math.abs((tonumber(pos.hash) or 0) - (tonumber(peek.po.hash) or 0)) < 200
         G_reader_settings:saveSetting(key, fp)
         if same_place then return end
@@ -575,7 +578,10 @@ function InkBridge:_auto_check_moon(entry)
                                  (tonumber(peek.po.star) or 0) + 1),
             ok_text = "跳转",
             cancel_text = "忽略",
-            ok_callback = function() Moonsync.import_from_moon(self) end,
+            ok_callback = function()
+                -- 已经问过用户了,让 import 直接跳,别再弹第二个确认框
+                Moonsync.import_from_moon(self, { already_confirmed = true })
+            end,
         })
     end)
 end

@@ -264,8 +264,14 @@ function Moonsync.local_position(plugin)
     local tagged = Moonsync.section_blocks_tagged(doc.file, pos.section)
     if not tagged then return nil end
 
-    local hash = Moon.offset_from_tagged(tagged, pos.p_index, pos.text_offset)
-    if not hash then return nil end
+    local hash, _, kind = Moon.offset_from_tagged(tagged, pos.p_index, pos.text_offset)
+    if not hash then
+        -- 页首落在章标题(h1/h2)上时 p_index 为 0,算不出段内偏移。
+        -- 这时**只报章节、不报偏移**(hash 为 nil):章节能可靠比较,
+        -- 而同章内硬塞一个 0 会给出方向相反的错误提示。
+        if kind == "nop" then return { section = pos.section } end
+        return nil
+    end
 
     return { section = pos.section, hash = hash }
 end
@@ -282,15 +288,15 @@ end
 function Moonsync.describe_direction(remote, local_pos)
     if type(remote) ~= "table" or type(local_pos) ~= "table" then return nil end
     local rs, ls = tonumber(remote.section), tonumber(local_pos.section)
-    local rh, lh = tonumber(remote.hash),    tonumber(local_pos.hash)
-    if not (rs and ls and rh and lh) then return nil end
+    if not (rs and ls) then return nil end
 
-    if rs < ls then
-        return string.format("在第 %d 章，比本机更早", rs)
-    end
-    if rs > ls then
-        return string.format("在第 %d 章，比本机更晚", rs)
-    end
+    -- 跨章:只用章节就能可靠判断方向(本机位置算不出偏移时也照样能给)
+    if rs < ls then return string.format("在第 %d 章，比本机更早", rs) end
+    if rs > ls then return string.format("在第 %d 章，比本机更晚", rs) end
+
+    -- 同章内必须知道双方偏移才敢下结论,否则宁可不说话
+    local rh, lh = tonumber(remote.hash), tonumber(local_pos.hash)
+    if not (rh and lh) then return nil end
 
     local d = rh - lh
     if d == 0 then
@@ -302,7 +308,9 @@ function Moonsync.describe_direction(remote, local_pos)
 end
 
 -- 主流程:取回 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
-function Moonsync.import_from_moon(plugin)
+-- opts.already_confirmed = true 表示调用方(如"打开书时自动核对")已经问过用户了,
+-- 这里直接跳,不再弹第二个确认框。
+function Moonsync.import_from_moon(plugin, opts)
     local body, ferr = Moonsync.fetch_po(plugin)
     if not body then
         show("墨桥：没能取到静读天下的进度文件。\n" .. tostring(ferr)
@@ -351,7 +359,7 @@ function Moonsync.import_from_moon(plugin)
             pos_percent  = po.pct / 100,
             device_label = "静读天下",
             dir_note     = dir_note,
-        })
+        }, { already_confirmed = opts and opts.already_confirmed })
     end)
     if not ok_jump then
         show("墨桥：跳转失败（" .. tostring(jerr) .. "）。")
@@ -728,13 +736,28 @@ function Moonsync.peek_po(plugin, callback)
 end
 
 -- 下载列表里那一行怎么写(纯函数,便于测试)。
--- 例:「静读天下 · 第 168 章 · 8 分钟前」;取不到数据时是「静读天下：无数据」。
-function Moonsync.peek_label(peek, now)
+--
+-- **刻意不写"第 N 章"**:`*` 是 spine 序号(0 基),不是书里的章号 ——
+-- 本书 spine 556 实际是「第五百五十一章 包围」。写成"第 557 章"会让人以为跳错了,
+-- 其实跳得很准。所以这里用**百分比 + 方向**:
+--   百分比:与排版无关、跨版本也能比;
+--   方向  :比本机更早还是更晚 —— 回头看旧章节时,靠它判断值不值得跳。
+-- 例:「静读天下 · 62.0% · 比本机晚 449 字，是前进 · 3 分钟前」。
+function Moonsync.peek_label(peek, now, local_pos)
     if type(peek) ~= "table" or type(peek.po) ~= "table" then
         return "静读天下：无数据"
     end
-    local parts = { "静读天下",
-                    string.format("第 %d 章", (tonumber(peek.po.star) or 0) + 1) }
+    local parts = { "静读天下" }
+
+    local pct = tonumber(peek.po.pct)
+    if pct then parts[#parts + 1] = string.format("%.1f%%", pct) end
+
+    if local_pos then
+        local dir = Moonsync.describe_direction(
+            { section = peek.po.star, hash = peek.po.hash }, local_pos)
+        if dir then parts[#parts + 1] = dir end
+    end
+
     if peek.modified and now then
         parts[#parts + 1] = WebDAV.human_age(now - peek.modified)
     end
