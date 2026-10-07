@@ -29,7 +29,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 当前状态
 
-**已有可用的实验性 Alpha（`0.2.18-alpha`）**，可在 [Releases](../../releases) 下载安装包。
+**已有可用的实验性 Alpha（`0.2.34-alpha`）**，可在 [Releases](../../releases) 下载安装包。
 上传、下载、跨设备跳转的完整流程已在 Android 与 Kindle 设备上实测通过。
 
 这是 Alpha：功能可用但仍在快速迭代，不代表稳定版本。使用前请先读插件自己的说明
@@ -37,7 +37,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ### 安装
 
-1. 到 [Releases](../../releases) 下载最新的 `inkbridge.koplugin-v*-alpha.zip`；
+1. 到 [Releases](../../releases) 下载最新的 `inkbridge.moon.koplugin-v*-alpha.zip`；
 2. 解压得到 `inkbridge.koplugin/` 目录（**不要**只解压里面的文件）；
 3. 放进 KOReader 的 `plugins/` 目录：
    - Kobo：`.adds/koreader/plugins/`
@@ -45,12 +45,16 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
    - Android：`/sdcard/koreader/plugins/`
 4. 完整重启 KOReader，在工具菜单打开「墨桥 InkBridge」。
 
-首次使用需在菜单里点「设置 WebDAV 目标」，并**长按**「Long-press here to choose current folder」
+首次使用先配云同步：**高级选项 → 存储选项 → 墨桥同步目录**
+（只配了一台服务器时会直接进目录浏览），并在里面**长按**「Long-press here to choose current folder」
 那一项来选定云端目录（KOReader 的标准交互）。
+
+> 包内目录名**永远**是 `inkbridge.koplugin/`，只有压缩包的**文件名**带 `.moon.`
+> —— KOReader 靠目录名认插件，改名会让老用户升级时多出一个旧插件。
 
 ### 参与开发
 
-见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（214 条断言，不需要设备）、
+见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（689 条断言，不需要设备）、
 进度记录的定位原理，以及已知问题清单。
 
 ## 设计原则
@@ -70,7 +74,7 @@ InkBridge 是独立项目，与 Syncery 没有官方隶属关系。早期设计�
 ## 开发方式
 
 **Powered by DeepSeek** —— 本项目的代码、回归测试与文档均在 DeepSeek 的辅助下完成。
-所有改动都要跑过 214 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
+所有改动都要跑过 689 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
 关键链路由真机验证。
 
 > DeepSeek 在这里是开发工具。本项目与 DeepSeek 官方没有任何隶属关系。

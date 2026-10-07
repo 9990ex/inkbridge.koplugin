@@ -63,8 +63,12 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
 把 `inkbridge.koplugin/` 整个目录放进 KOReader 的 `plugins/` 下,重启 KOReader,
 在工具菜单打开「墨桥 InkBridge」。
 
-首次使用需在菜单里点「设置 WebDAV 目标」——**必须长按**「Long-press here to choose current folder」
+首次使用先配云同步:**高级选项 → 存储选项 → 墨桥同步目录**
+(只配了一台服务器时会直接进目录浏览)——**必须长按**「Long-press here to choose current folder」
 那一项才能选中目录(KOReader 的标准交互)。
+
+> 压缩包的文件名是 `inkbridge.moon.koplugin-v*-alpha.zip`,但**包内目录名永远是
+> `inkbridge.koplugin/`** —— KOReader 靠目录名认插件,改它会让老用户升级时多出一个旧插件。
 
 ## 已修复(相对 v0.2.13-alpha,待真机验证)
 
