@@ -714,7 +714,16 @@ function Moonsync.peek_po(plugin, callback)
         if ok and type(items) == "table" then
             for _, item in ipairs(items) do
                 if item.text == filename then
-                    modified = tonumber(item.modification)
+                    local t = tonumber(item.modification)
+                    -- provider 的时间戳有个**已知偏差**:它用
+                    -- datetime.stringRFC1123ToSeconds 把服务器给的 GMT 字符串当**本地时间**
+                    -- 解释,于是东八区下会少 8 小时。KO 记录内部只用它排序(全体同偏差,
+                    -- 不影响相对次序),但我们**要显示给人看**,必须补回本地相对 UTC 的偏移。
+                    if t then
+                        local off = os.difftime(os.time(), os.time(os.date("!*t")))
+                        t = t + (tonumber(off) or 0)
+                    end
+                    modified = t
                     break
                 end
             end
