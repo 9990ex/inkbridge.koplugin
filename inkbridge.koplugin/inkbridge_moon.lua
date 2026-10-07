@@ -138,4 +138,64 @@ function Moon.snippet(section_text, offset, len)
     return Moon.utf8_sub(section_text, offset + 1, len)
 end
 
+-- ── 与静读天下对接的路径与文本工具(纯函数,便于单元测试)───────────────────
+
+-- HTML → 纯文本:去标签、解常见实体、去掉**所有**空白。
+-- 去空白是必须的:静读天下的章内偏移是按"去空白后的字符数"计的(已实测)。
+function Moon.plain_text(html)
+    local t = tostring(html):gsub("<[^>]*>", "")
+    t = t:gsub("&nbsp;", "")
+    t = t:gsub("&amp;", "&"):gsub("&lt;", "<"):gsub("&gt;", ">")
+         :gsub("&quot;", '"'):gsub("&apos;", "'")
+    t = t:gsub("&#(%d+);", function(d)
+        local n = tonumber(d)
+        if n and n < 128 then return string.char(n) end
+        return ""      -- 非 ASCII 数字实体少见,忽略以免口径错乱
+    end)
+    return (t:gsub("%s+", ""))
+end
+
+-- 规范化用户填写的目录:去首尾空白、统一斜杠、去掉尾部斜杠。
+-- 允许以 "/" 开头,表示"从 WebDAV 服务器根算起"的绝对路径(见 build_url)。
+function Moon.normalize_dir(value, default)
+    local dir = tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    if dir == "" then
+        dir = tostring(default or ""):gsub("^%s+", ""):gsub("%s+$", "")
+    end
+    return (dir:gsub("\\", "/"):gsub("/+$", ""))
+end
+
+-- 本机书籍路径 → 静读天下的进度文件名(`…/死人经.epub` → `死人经.epub.po`)
+function Moon.po_filename(book_file)
+    if type(book_file) ~= "string" or book_file == "" then return nil end
+    local name = book_file:gsub("\\", "/"):match("([^/]+)$")
+    if not name or name == "" then return nil end
+    return name .. ".po"
+end
+
+-- 逐段转义:只保留 URL 路径里安全的字符,其余按 UTF-8 字节转义。
+-- 特意**不转义 "+"**:它在路径中合法,而静读天下的目录名正是 ".Moon+",
+-- 且部分服务器对 %2B 的处理并不可靠。
+function Moon.uri_escape(seg)
+    return (tostring(seg):gsub("[^%w%-%._~+!$&'()*,;=:@/]", function(c)
+        return string.format("%%%02X", c:byte())
+    end))
+end
+
+-- 拼出该文件的完整 WebDAV URL。
+--   address  服务器地址(如 https://dav.jianguoyun.com/dav)
+--   root     当前 WebDAV 目标所在目录(server.url)
+--   dir      静读天下目录:相对 root;以 "/" 开头则从服务器根算起
+--   filename 文件名
+function Moon.build_url(address, root, dir, filename)
+    local addr = tostring(address or ""):gsub("/+$", "")
+    local folder = Moon.normalize_dir(dir, "")
+    if folder:sub(1, 1) ~= "/" then
+        local base = tostring(root or ""):gsub("^/+", ""):gsub("/+$", "")
+        folder = "/" .. (base == "" and folder or (base .. "/" .. folder))
+    end
+    folder = folder:gsub("//+", "/")
+    return addr .. folder .. "/" .. Moon.uri_escape(filename)
+end
+
 return Moon

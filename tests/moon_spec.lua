@@ -129,5 +129,46 @@ do
     eq("长度 0 要拒绝",      Moon.snippet(text, 3, 0), nil)
 end
 
+-- ── 与静读天下对接的路径与文本工具 ──────────────────────────────────────
+print("== 路径与文本工具 ==")
+do
+    -- HTML → 纯文本(偏移口径的关键:必须去掉所有空白)
+    eq("去标签", Moon.plain_text("<p>龙王</p>"), "龙王")
+    eq("去空白与换行", Moon.plain_text("<p>龙王\n  给出 </p>"), "龙王给出")
+    eq("实体解码", Moon.plain_text("a&amp;b&lt;c&gt;d&quot;e&apos;f"), "a&b<c>d\"e'f")
+    eq("nbsp 直接丢", Moon.plain_text("龙王&nbsp;给出"), "龙王给出")
+    eq("十进制实体", Moon.plain_text("a&#65;b"), "aAb")
+    eq("非 ASCII 数字实体忽略", Moon.plain_text("a&#20320;b"), "ab")
+
+    -- 目录规范化
+    eq("默认值兜底", Moon.normalize_dir(nil, "Apps/Books/.Moon+/Cache"), "Apps/Books/.Moon+/Cache")
+    eq("去首尾空白", Moon.normalize_dir("  Apps/x/  ", "d"), "Apps/x")
+    eq("反斜杠归一", Moon.normalize_dir("Apps\\x", "d"), "Apps/x")
+    eq("保留开头斜杠(绝对路径)", Moon.normalize_dir("/dav/1/BOOK", "d"), "/dav/1/BOOK")
+    eq("空串退回默认", Moon.normalize_dir("   ", "def"), "def")
+
+    -- 文件名
+    eq("取书名", Moon.po_filename("/books/死人经 (冰临神下) (Z-Library).epub"),
+       "死人经 (冰临神下) (Z-Library).epub.po")
+    eq("Windows 路径", Moon.po_filename("D:\\b\\书名.epub"), "书名.epub.po")
+    eq("空路径返回 nil", Moon.po_filename(""), nil)
+
+    -- URL 拼装
+    eq("相对目录接在 WebDAV 目标之后",
+       Moon.build_url("https://dav.example.com/dav", "/1/BOOK/inkbridge/test",
+                      "Apps/Books/.Moon+/Cache", "a b.epub.po"),
+       "https://dav.example.com/dav/1/BOOK/inkbridge/test/Apps/Books/.Moon+/Cache/a%20b.epub.po")
+    eq("绝对目录从服务器根算起(忽略 WebDAV 目标)",
+       Moon.build_url("https://dav.example.com/dav", "/1/BOOK/inkbridge/test",
+                      "/Apps/Books/.Moon+/Cache", "x.po"),
+       "https://dav.example.com/dav/Apps/Books/.Moon+/Cache/x.po")
+    eq("地址尾部斜杠容错",
+       Moon.build_url("https://dav.example.com/dav/", "", "Apps", "x.po"),
+       "https://dav.example.com/dav/Apps/x.po")
+    eq("中文按 UTF-8 字节转义",
+       Moon.build_url("https://d/", "", "Apps", "死人经.epub.po"),
+       "https://d/Apps/%E6%AD%BB%E4%BA%BA%E7%BB%8F.epub.po")
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)

@@ -137,6 +137,39 @@ function InkBridge:set_device_label()
     dialog:onShowKeyboard()
 end
 
+-- 让用户手动指定静读天下的云同步目录。
+-- 刻意不做自动探测:目录猜错会读到别的书的进度,而用户几乎不可能察觉。
+-- 可以填相对路径(相对当前 WebDAV 目标),也可以填以 "/" 开头的绝对路径
+-- (从 WebDAV 服务器根算起 —— 当静读天下的目录不在当前目标之下时用这种)。
+function InkBridge:set_moon_dir()
+    local dialog
+    dialog = InputDialog:new{
+        title = "静读天下同步目录",
+        description = "静读天下云同步存放进度文件的目录。\n"
+            .. "相对当前 WebDAV 目标,例如 Apps/Books/.Moon+/Cache\n"
+            .. "以 / 开头表示从服务器根算起。\n"
+            .. "当前:" .. Moonsync.get_dir(),
+        input = Moonsync.get_dir(),
+        buttons = {{
+            { text = "取消", callback = function() UIManager:close(dialog) end },
+            { text = "保存", is_enter_default = true, callback = function()
+                local dir = dialog:getInputText()
+                dir = dir and dir:gsub("^%s+", ""):gsub("%s+$", "") or ""
+                if dir ~= "" then
+                    Moonsync.set_dir(dir)
+                    UIManager:close(dialog)
+                    show("墨桥：静读天下同步目录已保存。")
+                else
+                    UIManager:close(dialog)
+                    show("墨桥：目录不能为空。")
+                end
+            end },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
 -- 只读下载用的本地临时文件。
 --
 -- 名字刻意用纯 ASCII，而不是沿用远端文件名（那是中文）：
@@ -280,6 +313,7 @@ function InkBridge:addToMainMenu(menu_items)
                 { text = "上传当前阅读进度", callback = function() self:upload_current() end },
                 { text = "下载并检查阅读进度", callback = function() self:download_current() end },
                 { text = "从静读天下读取进度", callback = function() Moonsync.import_from_moon(self) end },
+                { text = "设置静读天下同步目录", callback = function() self:set_moon_dir() end },
             }
         end,
     }
@@ -291,6 +325,7 @@ function InkBridge:deletePluginSettings()
     G_reader_settings:delSetting("inkbridge_device_id")
     G_reader_settings:delSetting("inkbridge_device_label")
     G_reader_settings:delSetting("inkbridge_webdav_server")
+    G_reader_settings:delSetting("inkbridge_moon_dir")
 end
 
 return InkBridge

@@ -1,60 +1,101 @@
 -- inkbridge_moonsync.lua ——「从静读天下(Moon+ Reader)读取进度」。
 --
--- 静读天下把每本书的进度写在云端 `<书名>.epub.po`(单行纯文本),
--- 目录为 `Apps/Books/.Moon+/Cache/`。格式与实测解码见 墨桥-samples/po-findings.md:
+-- 静读天下把每本书的进度写在云端 `<书名>.epub.po`(单行纯文本)。
+-- 格式与实测解码见 墨桥-samples/po-findings.md:
 --   `*` 章节序号(0 基,= KOReader 的 DocFragment 序号 − 1)—— 决定位置
 --   `#` 该章节内的字符偏移                                —— 决定位置
 --   `:%`/首个常量/`@` 与定位无关,只读不改。
 --
 -- 本模块负责:
---   1) 定位并下载当前书的 .po(**只读**,绝不改动静读天下的文件);
+--   1) 按**用户指定**的目录取回当前书的 .po(**只读**,绝不改动静读天下的文件);
 --   2) 解析出 (章节序号, 章内字符偏移);
 --   3) 用 ffi/archiver 打开本机 EPUB,取出该章节正文;
 --   4) 从正文里截一小段文字当锚点,交给已有的跳转流程 WebDAV.confirm_jump。
+--
+-- 为什么自己发 GET 而不用云端 provider:
+--   provider 的 downloadFile 本身也是直连 GET(providers/webdav.lua:142),
+--   但它把地址拆成 base.address + server.url 两段,无法指向目标目录之外。
+--   自己发请求后,目录既可以是"相对当前 WebDAV 目标",也可以是"从服务器根算起的绝对路径",
+--   而且完全不依赖 provider 的内部实现。
 --
 -- 为什么用"文本锚点"而不是直接拼 xpointer:分页模式下 KOReader 的 GotoXPointer 会把
 -- xpointer 换算成页码,而直接拼 DOM 路径又依赖每本书的元素嵌套;文本锚点是已验证可用、
 -- 且与 DOM 结构无关的路子。直接拼 xpointer 留作后续优化(更快,但要先验证结构一致)。
 
-local Moon       = require("inkbridge_moon")
-local WebDAV     = require("inkbridge_webdav")
+local Moon        = require("inkbridge_moon")
+local WebDAV      = require("inkbridge_webdav")
 local InfoMessage = require("ui/widget/infomessage")
 local UIManager   = require("ui/uimanager")
 
 local Moonsync = {}
 
--- 静读天下的云端缓存目录(相对 WebDAV 目标根目录)。
--- 注意:要让这个路径可达,WebDAV 目标应指向网盘账号的根(或同时包含 books 与 Apps 的层级)。
-Moonsync.MOON_DIR    = "Apps/Books/.Moon+/Cache"
+-- 默认目录仅作占位提示;实际以用户设置为准(见 设置 → 静读天下同步目录)。
+Moonsync.DEFAULT_DIR = "Apps/Books/.Moon+/Cache"
 Moonsync.SNIPPET_LEN = 20
+Moonsync.DIR_SETTING = "inkbridge_moon_dir"
 
 local function show(text)
     UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
 end
 
-local function basename(path)
-    return (tostring(path):gsub("\\", "/"):match("([^/]+)$")) or tostring(path)
+-- 当前目录设置。**刻意不做自动探测**:目录猜错会读到别的书的进度,
+-- 而这类错误用户很难察觉,所以宁可让他填一次。
+function Moonsync.get_dir()
+    local raw = G_reader_settings and G_reader_settings:readSetting(Moonsync.DIR_SETTING)
+    return Moon.normalize_dir(raw, Moonsync.DEFAULT_DIR)
 end
 
--- 由本机书籍路径推算云端 .po 路径:`…/死人经.epub` → `Apps/Books/.Moon+/Cache/死人经.epub.po`
-function Moonsync.po_remote_path(book_file)
-    if type(book_file) ~= "string" or book_file == "" then return nil end
-    return Moonsync.MOON_DIR .. "/" .. basename(book_file) .. ".po"
+function Moonsync.set_dir(dir)
+    if G_reader_settings then
+        G_reader_settings:saveSetting(Moonsync.DIR_SETTING, Moon.normalize_dir(dir, Moonsync.DEFAULT_DIR))
+    end
 end
 
--- HTML → 纯文本:去标签、解几个常见实体、去掉**所有**空白。
--- 去空白是必须的:静读天下的章内偏移是按"去空白后的字符数"计的(已实测)。
-local function plain_text(html)
-    local t = html:gsub("<[^>]*>", "")
-    t = t:gsub("&nbsp;", "")
-    t = t:gsub("&amp;", "&"):gsub("&lt;", "<"):gsub("&gt;", ">")
-         :gsub("&quot;", '"'):gsub("&apos;", "'")
-    t = t:gsub("&#(%d+);", function(d)
-        local n = tonumber(d)
-        if n and n < 128 then return string.char(n) end
-        return ""      -- 非 ASCII 数字实体少见,忽略以免口径错乱
-    end)
-    return (t:gsub("%s+", ""))
+-- 直接取回 .po 的文本内容;返回 内容 或 nil + 原因(不抛异常)。
+function Moonsync.fetch_po(plugin)
+    local doc = plugin and plugin.ui and plugin.ui.document
+    if not doc or type(doc.file) ~= "string" then return nil, "当前没有打开的书" end
+
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then
+        return nil, "还没有设置 WebDAV 目标"
+    end
+
+    local filename = Moon.po_filename(doc.file)
+    if not filename then return nil, "无法确定这本书的文件名" end
+
+    local url = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
+
+    local ok_http, http = pcall(require, "socket.http")
+    local ok_sock, socket = pcall(require, "socket")
+    local ok_ltn12, ltn12 = pcall(require, "ltn12")
+    local ok_util, socketutil = pcall(require, "socketutil")
+    if not (ok_http and ok_sock and ok_ltn12) then
+        return nil, "本机缺少网络模块"
+    end
+
+    local sink = {}
+    if ok_util and socketutil then
+        socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT)
+    end
+    local code, _, status = socket.skip(1, http.request{
+        url      = url,
+        method   = "GET",
+        sink     = ltn12.sink.table(sink),
+        user     = server.username,
+        password = server.password,
+    })
+    if ok_util and socketutil then socketutil:reset_timeout() end
+
+    if tonumber(code) ~= 200 then
+        return nil, string.format("服务器返回 %s（%s）", tostring(code), tostring(status or ""))
+    end
+    local body = table.concat(sink)
+    if body == "" then return nil, "拿到的是空文件" end
+    if body:sub(1, 1) == "<" then
+        return nil, "拿到的是网页而不是进度文件（地址或权限可能不对）"
+    end
+    return body
 end
 
 -- 打开 EPUB 取第 section_index(0 基)个正文章节的纯文本。
@@ -112,70 +153,49 @@ function Moonsync.section_text(epub_path, section_index)
     end
     close()
     if type(html) ~= "string" then return nil, "读不出该章节内容" end
-    return plain_text(html)
+    return Moon.plain_text(html)
 end
 
--- 主流程:读云端 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
+-- 主流程:取回 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
 function Moonsync.import_from_moon(plugin)
-    local ui  = plugin and plugin.ui
-    local doc = ui and ui.document
-    if not doc or type(doc.file) ~= "string" then
-        show("墨桥：当前没有打开的书。")
+    local body, ferr = Moonsync.fetch_po(plugin)
+    if not body then
+        show("墨桥：没能取到静读天下的进度文件。\n" .. tostring(ferr)
+            .. "\n目录：" .. Moonsync.get_dir())
         return
     end
 
-    local remote_path = Moonsync.po_remote_path(doc.file)
-    if not remote_path then
-        show("墨桥：无法确定这本书的文件名。")
+    local po, perr = Moon.parse(body)
+    if not po then
+        show("墨桥：静读天下的进度文件格式不认识（" .. tostring(perr) .. "）。")
         return
     end
 
-    WebDAV.download(plugin, remote_path, function(ok, local_path, err)
-        if not ok then
-            show("墨桥：云端没有找到静读天下的进度文件。\n" .. tostring(WebDAV.describe_error(err)))
-            return
-        end
+    local doc = plugin.ui.document
+    local section, serr = Moonsync.section_text(doc.file, po.star)
+    if not section then
+        show("墨桥：读不出这本书的对应章节（" .. tostring(serr) .. "）。")
+        return
+    end
 
-        local f = io.open(local_path, "r")
-        if not f then
-            show("墨桥：读不到下载下来的进度文件。")
-            return
-        end
-        local line = f:read("*l") or ""
-        f:close()
+    local snippet = Moon.snippet(section, po.hash, Moonsync.SNIPPET_LEN)
+    if not snippet or Moon.utf8_len(snippet) < 6 then
+        show("墨桥：静读天下的位置在本机定位不到（两边的章节结构可能不同）。")
+        return
+    end
 
-        local po, perr = Moon.parse(line)
-        if not po then
-            show("墨桥：静读天下的进度文件格式不认识（" .. tostring(perr) .. "）。")
-            return
-        end
-
-        local section, serr = Moonsync.section_text(doc.file, po.star)
-        if not section then
-            show("墨桥：读不出这本书的对应章节（" .. tostring(serr) .. "）。")
-            return
-        end
-
-        local snippet = Moon.snippet(section, po.hash, Moonsync.SNIPPET_LEN)
-        if not snippet or Moon.utf8_len(snippet) < 6 then
-            show("墨桥：静读天下的位置在本机定位不到（两边的章节结构可能不同）。")
-            return
-        end
-
-        -- 复用已有机制:文本锚点 + 内容比例消歧 + 询问用户 + 展示定位方式
-        local ok_jump, jerr = pcall(function()
-            WebDAV.confirm_jump(plugin, {
-                text_anchor  = snippet,
-                pos_percent  = po.pct / 100,
-                percent      = po.pct / 100,
-                device_label = "静读天下",
-                updated_at   = nil,
-            })
-        end)
-        if not ok_jump then
-            show("墨桥：跳转失败（" .. tostring(jerr) .. "）。")
-        end
+    -- 复用已有机制:文本锚点 + 内容比例消歧 + 询问用户 + 展示定位方式
+    local ok_jump, jerr = pcall(function()
+        WebDAV.confirm_jump(plugin, {
+            text_anchor  = snippet,
+            pos_percent  = po.pct / 100,
+            percent      = po.pct / 100,
+            device_label = "静读天下",
+        })
     end)
+    if not ok_jump then
+        show("墨桥：跳转失败（" .. tostring(jerr) .. "）。")
+    end
 end
 
 return Moonsync
