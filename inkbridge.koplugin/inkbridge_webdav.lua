@@ -462,6 +462,29 @@ function WebDAV.list_folder(plugin, folder_path, callback)
         callback(ok, items, err)
     end
 
+    -- ★ 列目录期间**临时**让 provider 不要按扩展名过滤。
+    --
+    -- KOReader 的 WebDAV provider 在解析 PROPFIND 结果时是这么筛的:
+    --     if show_unsupported or DocumentRegistry:hasProvider(item_name) then … end
+    -- 而 `.po` **不在 KOReader 的文档类型表里**(那是静读天下自己的格式),
+    -- 所以不打开 show_unsupported 时,`.po` 压根不会出现在列表里 ——
+    -- 表现是「静读天下：无数据」「目录里没有 .po 文件」,而文件明明躺在那里。
+    -- 真机上就是这个原因,用户只好去全局打开 show_unsupported。
+    --
+    -- 两个刻意的选择:
+    --   1. 只改**内存里**的那一份(G_reader_settings.data),不调 saveSetting ——
+    --      这是我们为了看一眼文件名做的临时动作,不该写进用户的设置文件;
+    --   2. 用完**原样放回**(哪怕原本是 nil),而且放在 pcall 之外 ——
+    --      provider 抛异常时也必须还原,否则就把全局偏好给改了。
+    -- 绝不调用 KOReader 的 toggleShowFilesMode:那个是**会持久化**的。
+    local data = G_reader_settings and G_reader_settings.data
+    local settings_table = (type(data) == "table") and data or nil
+    local had_unsupported
+    if settings_table then
+        had_unsupported = settings_table.show_unsupported
+        settings_table.show_unsupported = true
+    end
+
     local function request()
         local ok, result = pcall(function()
             return provider.listFolder(folder_path or "", true)
@@ -476,6 +499,8 @@ function WebDAV.list_folder(plugin, folder_path, callback)
         finish(true, out, nil)
     end
     local dispatched, err = pcall(provider.run, request)
+
+    if settings_table then settings_table.show_unsupported = had_unsupported end
     if not dispatched then finish(false, nil, tostring(err)) end
 end
 

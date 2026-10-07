@@ -144,11 +144,12 @@ end
 -- 可以填相对路径(相对当前 WebDAV 目标),也可以填以 "/" 开头的绝对路径
 -- (从 WebDAV 服务器根算起 —— 当静读天下的目录不在当前目标之下时用这种)。
 function InkBridge:set_moon_dir()
+    local plat = Moonsync.get_platform()
     local dialog
     dialog = InputDialog:new{
-        title = "静读天下同步目录",
-        description = "静读天下云同步存放进度文件的目录。\n"
-            .. "相对当前 WebDAV 目标,例如 Apps/Books/.Moon+/Cache\n"
+        title = (plat.short or plat.name) .. "同步目录",
+        description = plat.name .. "云同步存放进度文件的目录。\n"
+            .. "相对当前 WebDAV 目标,例如 " .. tostring(plat.dir or "Apps/Books/…") .. "\n"
             .. "以 / 开头表示从服务器根算起。\n"
             .. "当前:" .. Moonsync.get_dir(),
         input = Moonsync.get_dir(),
@@ -220,8 +221,11 @@ function InkBridge:_sync(entry, mode)
                         if peek then
                             Moonsync.import_from_moon(self)
                         else
-                            show("墨桥：静读天下里没有这本书的进度文件。\n"
-                                .. "（手动选择文件的功能还在开发中）")
+                            -- 自动推的名字找不到时,十有八九是两边的书名不一致。
+                            -- 直接让用户从目录里挑一份,比丢一句"没有"有用得多。
+                            Moonsync.pick_po(self, function(name)
+                                Moonsync.import_named(self, name)
+                            end)
                         end
                     end,
                 }
@@ -350,14 +354,59 @@ end
 -- 注意:「墨桥同步目录」是**整个**选服务器+选目录;只有一台服务器时,
 -- KOReader 的云存储列表里本来就只有一项,用户点一下也就进目录了(见 README 说明)。
 function InkBridge:_webdav_menu()
+    local plat = Moonsync.get_platform()
+    local usable = plat.status == "ok"
     return {
         { text = "墨桥同步目录",
           help_text = "墨桥进度存放的目录（配了多台服务器时先选服务器）",
           callback = function() WebDAV.pick_server(self) end },
-        { text = "静读天下同步目录",
-          help_text = "相对上面那个目录；以 / 开头表示从服务器根算起",
+        -- 兼容平台放在目录上面:它决定了下面那个目录是"哪一家"的。
+        { text = "兼容平台",
+          help_text = "当前：" .. plat.name,
+          sub_item_table_func = function() return self:_platform_menu() end },
+        { text = (plat.short or plat.name) .. "同步目录",
+          help_text = usable
+              and "相对上面那个目录；以 / 开头表示从服务器根算起"
+              or "格式待破译，暂时用不上",
+          enabled_func = function() return usable end,
           callback = function() self:set_moon_dir() end },
+        -- 手动选文件不是"高级功能",而是自动认不出时的**唯一出路**,
+        -- 所以和目录摆在一起,不藏进高级选项。
+        { text = "手动选择进度文件",
+          help_text = "自动找不到时从目录里挑一份（只读文件名，不耗下载额度）",
+          enabled_func = function() return usable end,
+          callback = function()
+              Moonsync.pick_po(self, function(name) Moonsync.import_named(self, name) end)
+          end },
     }
+end
+
+-- 兼容平台。
+--
+-- 目前只有静读天下真正可用。另外两家**刻意也列出来,并写明「格式待破译」**:
+--   * 藏起来会让人以为这个插件只打算支持一家,而"从另一台设备的阅读器里捞进度"
+--     这件事本身是通用的,只差一份格式样本;
+--   * 但点它们**不会**让插件去猜别人的格式 —— 猜错的表现是"跳到书里随便一个位置",
+--     比直接说"还不行"危险得多,所以只给一句说明。
+function InkBridge:_platform_menu()
+    local items = {}
+    for _, p in ipairs(Moonsync.PLATFORMS) do
+        items[#items + 1] = {
+            text = (p.status == "ok") and p.name or (p.name .. "（格式待破译）"),
+            help_text = p.note,
+            checked_func = function() return Moonsync.get_platform().id == p.id end,
+            callback = function()
+                if p.status ~= "ok" then
+                    show("墨桥：" .. p.name .. " 的进度文件格式还没破译，暂时不能同步。\n"
+                        .. "需要先在真机上拿到它的进度文件样本。")
+                    return
+                end
+                Moonsync.set_platform(p.id)
+                show("墨桥：兼容平台已切换为 " .. p.name .. "。")
+            end,
+        }
+    end
+    return items
 end
 
 -- 高级选项:低频设置全部收在这里,一级只留"上传/下载"两个动作。
@@ -670,6 +719,7 @@ function InkBridge:deletePluginSettings()
     G_reader_settings:delSetting("inkbridge_moon_book_ref")
     G_reader_settings:delSetting("inkbridge_moon_auto_push")
     G_reader_settings:delSetting("inkbridge_auto_check")
+    G_reader_settings:delSetting("inkbridge_platform")
 end
 
 return InkBridge

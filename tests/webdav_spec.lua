@@ -53,10 +53,13 @@ package.preload["util"] = function()
     }
 end
 _G.G_reader_settings = {
-    isTrue       = function() return false end,
-    readSetting  = function() end,
-    saveSetting  = function() end,
-    delSetting   = function() end,
+    -- data 是 LuaSettings 真正存放设置的地方,provider 的 isTrue("show_unsupported")
+    -- 读的就是它。列目录要临时改这里的 show_unsupported,所以测试也照这个形状造。
+    data         = {},
+    isTrue       = function(self, k) return self.data[k] == true end,
+    readSetting  = function(self, k) return self.data[k] end,
+    saveSetting  = function(self, k, v) self.data[k] = v end,
+    delSetting   = function(self, k) self.data[k] = nil end,
 }
 
 local WebDAV = dofile(PLUGIN_DIR .. "/inkbridge_webdav.lua")
@@ -129,6 +132,7 @@ local function make_env(opts)
     provider.listFolder = function(url, include_folders)
         calls.list_url = url
         calls.list_include_folders = include_folders
+        calls.base_during_list = provider.base   -- 验证 base 的副本/恢复行为
         return opts.listing
     end
 
@@ -645,6 +649,140 @@ do
     eq("天", WebDAV.human_age(86400 * 3), "3 天前")
     eq("负数当未知", WebDAV.human_age(-1), "未知")
     eq("nil 当未知", WebDAV.human_age(nil), "未知")
+end
+
+-- ── 列任意目录(静读天下的 .po 不在历史记录里,得单独列它那个目录) ──────────
+-- 这一条路的输出会被直接拿去**显示给用户看的时间**,错了会误导;而且它的失败
+-- 与"目录里就是没有这本书"必须分得清,否则会把同步故障伪装成"静读天下没这本"。
+print("== list_folder（列任意目录，只读元数据）==")
+do
+    local function call(plugin, folder)
+        return invoke(function(cb) WebDAV.list_folder(plugin, folder, cb) end)
+    end
+
+    -- ① 目标不是 WebDAV:直接失败,连 provider 都不碰
+    local r = call({ server = { type = "dropbox" }, ui = {} }, "/x")
+    eq("非 WebDAV 目标 → 失败", r[1], false)
+    check("  并说明原因",
+          type(r[3]) == "string" and r[3]:find("not configured", 1, true) ~= nil, r[3])
+
+    -- ② KOReader 里没有 webdav provider(云存储插件缺失/被裁剪)
+    r = call({ server = new_server(), ui = { cloudstorage = { providers = {} } } }, "/x")
+    eq("provider 缺失 → 失败", r[1], false)
+    check("  并说明原因",
+          type(r[3]) == "string" and r[3]:find("unavailable", 1, true) ~= nil, r[3])
+
+    -- ③ 正常:目录项丢掉(调用方要的是文件),路径与 include_folders 原样传下去
+    local plugin, provider, calls = make_env{ listing = {
+        { is_file = true,  text = "死人经.epub.po", modification = 1700000000 },
+        { is_file = false, text = "子目录" },
+        { is_file = true,  text = "另一本.epub.po" },
+        { text = "没有 is_file 的捣乱项" },
+    } }
+    r = call(plugin, "/books/Apps/Books/.Moon+/Cache")
+    eq("正常列目录 → 成功", r[1], true)
+    eq("  只留文件项", #r[2], 2)
+    eq("  顺序保持服务器给的顺序", r[2] and r[2][1] and r[2][1].text, "死人经.epub.po")
+    eq("  时间戳原样带出来",
+       r[2] and r[2][1] and r[2][1].modification, 1700000000)
+    eq("  路径原样透传", calls.list_url, "/books/Apps/Books/.Moon+/Cache")
+    eq("  要目录项(过滤留给调用方)", calls.list_include_folders, true)
+
+    -- ④ base 是 server 的**副本**,用完必须还原 —— 否则会污染后续请求
+    eq("  调用期间 base 指向目标服务器",
+       calls.base_during_list and calls.base_during_list.address, plugin.server.address)
+    check("  base 是副本,不是插件设置表本身",
+          calls.base_during_list ~= plugin.server)
+    eq("  调用后 base 还原", provider.base, nil)
+    provider.base = "旧值"
+    call(plugin, "/x")
+    eq("  有旧值时还原成旧值", provider.base, "旧值")
+
+    -- ⑤ listFolder 返回 nil 不能当空目录:那会把"同步失败"伪装成"没有这本书"
+    local p5 = make_env{ listing = nil }
+    r = call(p5, "/x")
+    eq("listFolder 返回 nil → 失败", r[1], false)
+    eq("  不给空列表", r[2], nil)
+    check("  并说明原因",
+          type(r[3]) == "string" and r[3]:find("list failed", 1, true) ~= nil, r[3])
+
+    -- ⑥ provider 抛异常:必须吃掉,不能炸到调用方
+    local p6 = make_env{}
+    p6.ui.cloudstorage.providers.webdav.listFolder = function() error("boom") end
+    r = call(p6, "/x")
+    eq("listFolder 抛异常 → 失败(不抛出)", r[1], false)
+    check("  带上原始原因",
+          type(r[3]) == "string" and r[3]:find("boom", 1, true) ~= nil, r[3])
+    eq("  异常时也要还原 base", p6.ui.cloudstorage.providers.webdav.base, nil)
+
+    -- ⑦ 空目录是**成功**(只是没有 .po),要和失败严格区分
+    local p7 = make_env{ listing = {} }
+    r = call(p7, "/x")
+    eq("空目录 → 成功", r[1], true)
+    eq("  给出空列表", type(r[2]) == "table" and #r[2] or -1, 0)
+    eq("  没有错误", r[3], nil)
+
+    -- ⑧ 回调只许触发一次:provider.run 在回调之后再抛,不能把成功改写成失败
+    local p8 = make_env{ listing = { { is_file = true, text = "a.po" } } }
+    local prov8 = p8.ui.cloudstorage.providers.webdav
+    prov8.run = function(cb) cb(); error("回调之后才炸") end
+    r = call(p8, "/x")
+    eq("迟到的异常不覆盖成功结果", r[1], true)
+    eq("  文件还在", #r[2], 1)
+    eq("  base 仍然还原", prov8.base, nil)
+
+    -- ⑨ 缺路径:传空串,不能传 nil(上游按字符串拼 URL)
+    local p9, _, c9 = make_env{ listing = {} }
+    call(p9, nil)
+    eq("缺路径时传空串", c9.list_url, "")
+
+    -- ⑩ ★ 列目录期间必须临时打开 show_unsupported
+    --
+    -- 背景:KOReader 的 WebDAV provider 用
+    --     if show_unsupported or DocumentRegistry:hasProvider(name) then … end
+    -- 筛条目,而 `.po` 不在 KOReader 的文档类型表里 —— 不打开这个开关,
+    -- `.po` 根本不会出现在列表里,表现就是「静读天下：无数据」。
+    local seen_flag = nil
+    G_reader_settings.data.show_unsupported = nil
+    local p10 = make_env{ listing = {} }
+    local prov10 = p10.ui.cloudstorage.providers.webdav
+    local real_list = prov10.listFolder
+    prov10.listFolder = function(url, inc)
+        seen_flag = G_reader_settings.data.show_unsupported
+        return real_list(url, inc)
+    end
+    call(p10, "/x")
+    eq("列目录时 show_unsupported 是开的", seen_flag, true)
+    eq("用完原样放回(原本没有 → 还是 nil)", G_reader_settings.data.show_unsupported, nil)
+
+    -- 原本是 false(用户明确关过):也要放回 false,不能变成 true
+    G_reader_settings.data.show_unsupported = false
+    call(p10, "/x")
+    eq("原本 false 就放回 false", G_reader_settings.data.show_unsupported, false)
+
+    -- 原本是 true:保持 true
+    G_reader_settings.data.show_unsupported = true
+    call(p10, "/x")
+    eq("原本 true 就保持 true", G_reader_settings.data.show_unsupported, true)
+
+    -- provider 抛异常时也必须还原(否则等于偷偷改了全局偏好)
+    G_reader_settings.data.show_unsupported = nil
+    local p11 = make_env{}
+    p11.ui.cloudstorage.providers.webdav.listFolder = function() error("boom") end
+    call(p11, "/x")
+    eq("抛异常后也要还原", G_reader_settings.data.show_unsupported, nil)
+
+    -- 绝不写进设置文件:saveSetting 一次都不该被调用
+    local saves = 0
+    local real_save = G_reader_settings.saveSetting
+    G_reader_settings.saveSetting = function(self, k, v)
+        if k == "show_unsupported" then saves = saves + 1 end
+        return real_save(self, k, v)
+    end
+    make_env{ listing = {} }
+    call(make_env{ listing = {} }, "/x")
+    eq("绝不把 show_unsupported 写进设置文件", saves, 0)
+    G_reader_settings.saveSetting = real_save
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

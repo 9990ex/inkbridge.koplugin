@@ -26,6 +26,8 @@ local Moon        = require("inkbridge_moon")
 local WebDAV      = require("inkbridge_webdav")
 local ConfirmBox  = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
+local ButtonDialog = require("ui/widget/buttondialog")
+local InputDialog  = require("ui/widget/inputdialog")
 local UIManager   = require("ui/uimanager")
 
 local Moonsync = {}
@@ -35,25 +37,114 @@ Moonsync.DEFAULT_DIR = "Apps/Books/.Moon+/Cache"
 Moonsync.SNIPPET_LEN = 20
 Moonsync.DIR_SETTING = "inkbridge_moon_dir"
 
-local function show(text)
-    UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
+-- ── 兼容平台 ──────────────────────────────────────────────────────────────
+--
+-- 这个模块的名字(mini/moonsync)会一直让人以为它只服务静读天下,但"从另一台设备
+-- 的阅读器里把进度捞出来"这件事,机制是通用的:**一份云端进度文件 + 一套
+-- (章节序号, 章内字符偏移) 的换算**。差别只在文件长什么样、放在哪个目录。
+--
+-- 所以这里把"平台"显式列出来。status:
+--   ok   —— 格式已用真机数据破译并验证过,能读能写;
+--   todo —— **只有外壳,没有解码器**。菜单里会明写「格式待破译」,
+--           绝不会静默地去猜别人的格式 —— 猜错的表现是"跳到书里随便一个地方",
+--           用户几乎不可能察觉,这比直接报错危险得多。
+Moonsync.PLATFORMS = {
+    {
+        id     = "moon",
+        name   = "静读天下（Moon+ Reader）",
+        short  = "静读天下",
+        dir    = "Apps/Books/.Moon+/Cache",
+        ext    = ".po",
+        status = "ok",
+    },
+    {
+        id     = "legado",
+        name   = "开源阅读（Legado）",
+        short  = "开源阅读",
+        dir    = nil,
+        ext    = nil,
+        status = "todo",
+        note   = "格式待破译；需要先在真机上拿到它的进度文件样本",
+    },
+    {
+        id     = "readest",
+        name   = "Readest",
+        short  = "Readest",
+        dir    = nil,
+        ext    = nil,
+        status = "todo",
+        note   = "格式待破译；需要先在真机上拿到它的进度文件样本",
+    },
+}
+Moonsync.PLATFORM_SETTING = "inkbridge_platform"
+Moonsync.DEFAULT_PLATFORM = "moon"
+
+-- 按 id 找平台;找不到就当默认平台(老的设置文件里没有这一项)。
+function Moonsync.platform(id)
+    local want = id or Moonsync.DEFAULT_PLATFORM
+    for _, p in ipairs(Moonsync.PLATFORMS) do
+        if p.id == want then return p end
+    end
+    return Moonsync.PLATFORMS[1]
+end
+
+function Moonsync.get_platform()
+    local raw = G_reader_settings and G_reader_settings:readSetting(Moonsync.PLATFORM_SETTING)
+    return Moonsync.platform(raw)
+end
+
+-- 这个平台的进度文件长什么样(纯函数,便于测试)。
+--
+-- `ext` 为空表示"还不知道它叫什么" —— 这时**任何**文件都不认,而不是退化成
+-- "全部认下"。宁可一个都认不出,也不能把一本电子书当进度文件读进来。
+function Moonsync.is_progress_file(name, plat)
+    if type(name) ~= "string" or name == "" then return false end
+    local p = plat or Moonsync.get_platform()
+    local ext = p and p.ext
+    if type(ext) ~= "string" or ext == "" then return false end
+    local tail = name:sub(-#ext):lower()
+    return tail == ext:lower()
+end
+
+-- 切换平台。**必须连带处理目录**:两个平台的目录完全不同,留着上一家的目录
+-- 会让新平台去读旧平台的文件夹(读不到还好,读到了就是灾难)。
+function Moonsync.set_platform(id)
+    local p = Moonsync.platform(id)
+    if G_reader_settings then
+        G_reader_settings:saveSetting(Moonsync.PLATFORM_SETTING, p.id)
+        if p.dir then
+            G_reader_settings:saveSetting(Moonsync.DIR_SETTING, Moon.normalize_dir(p.dir, p.dir))
+        end
+    end
+    return p
 end
 
 -- 当前目录设置。**刻意不做自动探测**:目录猜错会读到别的书的进度,
 -- 而这类错误用户很难察觉,所以宁可让他填一次。
+function Moonsync.default_dir()
+    local p = Moonsync.get_platform()
+    return (p and p.dir) or Moonsync.DEFAULT_DIR
+end
+
 function Moonsync.get_dir()
     local raw = G_reader_settings and G_reader_settings:readSetting(Moonsync.DIR_SETTING)
-    return Moon.normalize_dir(raw, Moonsync.DEFAULT_DIR)
+    return Moon.normalize_dir(raw, Moonsync.default_dir())
 end
 
 function Moonsync.set_dir(dir)
     if G_reader_settings then
-        G_reader_settings:saveSetting(Moonsync.DIR_SETTING, Moon.normalize_dir(dir, Moonsync.DEFAULT_DIR))
+        G_reader_settings:saveSetting(Moonsync.DIR_SETTING, Moon.normalize_dir(dir, Moonsync.default_dir()))
     end
 end
 
+local function show(text)
+    UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
+end
+
 -- 直接取回 .po 的文本内容;返回 内容 或 nil + 原因(不抛异常)。
-function Moonsync.fetch_po(plugin)
+-- filename 可选:不给就按当前书自动推。**手动选文件**时由调用方传进来 ——
+-- 有些书的云端文件名和本机文件名并不一致,自动推必然推不出来。
+function Moonsync.fetch_po(plugin, filename)
     local doc = plugin and plugin.ui and plugin.ui.document
     if not doc or type(doc.file) ~= "string" then return nil, "当前没有打开的书" end
 
@@ -62,7 +153,7 @@ function Moonsync.fetch_po(plugin)
         return nil, "还没有设置 WebDAV 目标"
     end
 
-    local filename = Moon.po_filename(doc.file)
+    filename = filename or Moon.po_filename(doc.file)
     if not filename then return nil, "无法确定这本书的文件名" end
 
     local url = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
@@ -311,9 +402,10 @@ end
 -- opts.already_confirmed = true 表示调用方(如"打开书时自动核对")已经问过用户了,
 -- 这里直接跳,不再弹第二个确认框。
 function Moonsync.import_from_moon(plugin, opts)
-    local body, ferr = Moonsync.fetch_po(plugin)
+    local plat = Moonsync.get_platform()
+    local body, ferr = Moonsync.fetch_po(plugin, opts and opts.filename)
     if not body then
-        show("墨桥：没能取到静读天下的进度文件。\n" .. tostring(ferr)
+        show("墨桥：没能取到" .. plat.name .. "的进度文件。\n" .. tostring(ferr)
             .. "\n目录：" .. Moonsync.get_dir())
         return
     end
@@ -682,6 +774,142 @@ function Moonsync.push_to_moon(plugin)
         cancel_text = "取消",
         ok_callback = function() Moonsync._do_push(plugin, job) end,
     })
+end
+
+-- ── 手动选进度文件 ────────────────────────────────────────────────────────
+--
+-- 为什么要它:自动推出来的名字是「本机文件名 + 扩展名」,而云端那份是**对面那个
+-- 阅读器导书时**用的名字。两边不完全一致时(去掉了括号、换了标点、加了序号……)
+-- 自动必然找不到 —— 这时唯一可靠的办法是让用户自己从目录里挑一份。
+--
+-- 为什么不用 KOReader 自带的文件选择器:
+--   1. 它按"是不是能打开的文档类型"过滤,`.po` 不在白名单里,**默认根本看不见**;
+--      要让它显示得全局打开 show_unsupported,那是写给设置文件的开关 ——
+--      为一个功能去改用户的全局偏好、还得记得还原,不值当;
+--   2. 云端模式下它的 onMenuSelect 被云存储插件接管成"上传/下载",要另做手脚;
+--   3. 它列目录会**下载**文件(吃网盘下载额度),而我们只需要文件名。
+-- 于是自己列目录 + 自己弹一个列表:只读元数据、不耗额度、扩展名由我们说了算。
+--
+-- 回调 (files, err):files 是 { { name=, modified= }, ... },按时间从新到旧。
+function Moonsync.list_progress_files(plugin, callback)
+    local plat = Moonsync.get_platform()
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then
+        callback(nil, "还没有设置 WebDAV 目标")
+        return
+    end
+    -- 没破译格式的平台:**一个文件都不认**,而不是"全都让你选" ——
+    -- 选错了会把一本电子书当进度文件读进来。
+    if type(plat.ext) ~= "string" or plat.ext == "" then
+        callback(nil, plat.name .. "的进度文件格式还没破译，认不出是哪个文件")
+        return
+    end
+
+    WebDAV.list_folder(plugin, Moon.build_folder(server.url, Moonsync.get_dir()),
+                       function(ok, items, err)
+        if not ok or type(items) ~= "table" then
+            callback(nil, "读取目录失败（" .. tostring(err) .. "）")
+            return
+        end
+        local files = {}
+        for _, item in ipairs(items) do
+            if type(item.text) == "string" and Moonsync.is_progress_file(item.text, plat) then
+                files[#files + 1] = { name = item.text,
+                                      modified = tonumber(item.modification) }
+            end
+        end
+        table.sort(files, function(a, b)
+            local am, bm = a.modified or 0, b.modified or 0
+            if am == bm then return a.name < b.name end
+            return am > bm
+        end)
+        callback(files)
+    end)
+end
+
+-- 让用户手动敲一个文件名(目录里认不出来 / 文件不在这个目录 / 名字太怪)。
+function Moonsync._ask_po_name(plugin, callback)
+    local plat = Moonsync.get_platform()
+    local doc  = plugin and plugin.ui and plugin.ui.document
+    local guess = doc and doc.file and Moon.po_filename(doc.file) or ""
+    local dialog
+    dialog = InputDialog:new{
+        title = "进度文件名",
+        description = "填「" .. plat.name .. "」在同步目录里的文件名。\n目录："
+            .. Moonsync.get_dir(),
+        input = guess,
+        buttons = {{
+            { text = "取消", callback = function() UIManager:close(dialog) end },
+            { text = "确定", is_enter_default = true, callback = function()
+                local name = dialog:getInputText() or ""
+                name = name:gsub("^%s+", ""):gsub("%s+$", "")
+                UIManager:close(dialog)
+                if name == "" then return end
+                callback(name)
+            end },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+-- 弹出"挑一个进度文件"的列表;选中后把**文件名**回调出去。
+-- 总是给一条「手动输入文件名」:目录列表拿不到时(没网/权限/目录不对),
+-- 这是唯一的出路,不能因为列表为空就把整条路堵死。
+function Moonsync.pick_po(plugin, callback)
+    if type(callback) ~= "function" then return end
+    local plat = Moonsync.get_platform()
+
+    Moonsync.list_progress_files(plugin, function(files, err)
+        if not files then
+            show("墨桥：" .. tostring(err) .. "\n目录：" .. Moonsync.get_dir())
+            return
+        end
+
+        local dialog
+        local buttons = {}
+        for _, f in ipairs(files) do
+            local when = Moonsync.format_time(f.modified)
+            buttons[#buttons + 1] = { {
+                text = when and (f.name .. "（" .. when .. "）") or f.name,
+                callback = function()
+                    UIManager:close(dialog)
+                    callback(f.name)
+                end,
+            } }
+        end
+        buttons[#buttons + 1] = { {
+            text = "手动输入文件名…",
+            callback = function()
+                UIManager:close(dialog)
+                Moonsync._ask_po_name(plugin, callback)
+            end,
+        } }
+        buttons[#buttons + 1] = { {
+            text = "取消",
+            callback = function() UIManager:close(dialog) end,
+        } }
+
+        dialog = ButtonDialog:new{
+            title = "选择进度文件 · " .. plat.name
+                .. (plat.ext and ("（只列 " .. plat.ext .. "）") or ""),
+            buttons = buttons,
+        }
+        UIManager:show(dialog)
+        if #files == 0 then
+            -- 列表为空时把"为什么空"说清楚,而不是只弹一个只有取消的框
+            show("墨桥：这个目录里没有 " .. tostring(plat.ext) .. " 文件。\n"
+                .. Moonsync.get_dir())
+        end
+    end)
+end
+
+-- 用**指定文件名**导入(手动选文件走这条)。
+function Moonsync.import_named(plugin, filename, opts)
+    if type(filename) ~= "string" or filename == "" then return end
+    local o = { filename = filename }
+    for k, v in pairs(opts or {}) do o[k] = v end
+    Moonsync.import_from_moon(plugin, o)
 end
 
 -- ── 给下载列表用:只看一眼 .po,不弹任何界面 ───────────────────────────────
