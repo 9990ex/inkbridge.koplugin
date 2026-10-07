@@ -531,38 +531,46 @@ function WebDAV.confirm_jump(plugin, remote)
         return
     end
 
+    -- 确认框遵守一条规矩:**只在"需要你知道"的时候才多一行**。
+    -- 原先它把"本机定位方式""命中几处"这类内部细节无条件摊开,五行起步,像调试输出
+    -- (实测用户反馈"内容太冗余")。现在:
+    --   * 进度、是否内容比例、方向提示 —— 并进第一行的括号里;
+    --   * 定位方式**只在不是精确方式时**才显示(降级才是"跳得准不准"的关键);
+    --   * 命中数**只在多命中**时才显示(那才有歧义)。
+    local shown_pct = tonumber(remote.percent)
+    local notes = {}
+    if not shown_pct then
+        -- 静读天下那条路进来的是 pos_percent(内容比例,≈62%),没有 percent(页数比例)。
+        -- 以前这里只读 percent,于是永远显示「0.00%」—— 实测踩到。
+        shown_pct = tonumber(remote.pos_percent)
+        table.insert(notes, "内容比例")
+    end
+    if type(remote.dir_note) == "string" and remote.dir_note ~= "" then
+        table.insert(notes, remote.dir_note)
+    end
+
+    local lines = {
+        string.format("远端阅读位置：%.2f%%%s", (shown_pct or 0) * 100,
+                      #notes > 0 and ("（" .. table.concat(notes, "；") .. "）") or ""),
+    }
+    if remote.page and remote.total_pages then
+        table.insert(lines, string.format("远端设备：第 %s / %s 页",
+            tostring(remote.page), tostring(remote.total_pages)))
+    end
+
     local method_label = {
         xpointer = "xpointer 内容锚点（精确）",
         text     = "文本锚点搜索（精确）",
         page     = "页码（固定版式）",
         percent  = "页数比例换算（近似）",
     }
-    -- 静读天下那条路进来的是 pos_percent(内容比例,≈62%),没有 percent(页数比例)。
-    -- 以前这里只读 percent,于是确认框里永远显示「远端阅读位置：0.00%」—— 实测踩到。
-    local shown_pct = tonumber(remote.percent)
-    local pct_note  = ""
-    if not shown_pct then
-        shown_pct = tonumber(remote.pos_percent)
-        pct_note  = "（内容比例）"
-    end
-    local lines = {
-        string.format("远端阅读位置：%.2f%%%s", (shown_pct or 0) * 100, pct_note),
-    }
-    -- 方向提示(可选):静读天下那条路会带上"远端比本机更早/更晚"。
-    -- 页级定位下,差几个字就可能整整退一页,所以跳之前先说清往哪边走。
-    if type(remote.dir_note) == "string" and remote.dir_note ~= "" then
-        table.insert(lines, remote.dir_note)
-    end
-    if remote.page and remote.total_pages then
-        table.insert(lines, string.format("远端设备：第 %s / %s 页",
-            tostring(remote.page), tostring(remote.total_pages)))
-    end
-    table.insert(lines, "本机定位方式：" .. (method_label[plan.method] or tostring(plan.method)))
-    if plan.method == "text" and plan.hits then
-        table.insert(lines, string.format("（文本锚点全文命中 %d 处，取最接近的）", plan.hits))
-    end
-    if plan.method == "percent" and type(remote.xpointer) == "string" and remote.xpointer ~= "" then
-        table.insert(lines, "（远端 xpointer 在本机无法解析，已降级）")
+    if plan.method ~= "xpointer" and plan.method ~= "text" then
+        table.insert(lines, "本机定位方式：" .. (method_label[plan.method] or tostring(plan.method)))
+        if type(remote.xpointer) == "string" and remote.xpointer ~= "" then
+            table.insert(lines, "（远端 xpointer 在本机无法解析，已降级）")
+        end
+    elseif plan.method == "text" and plan.hits and plan.hits > 1 then
+        table.insert(lines, string.format("（锚点命中 %d 处，取最接近的）", plan.hits))
     end
     table.insert(lines, "跳转过去吗？")
 

@@ -276,6 +276,8 @@ end
 -- —— 差 4 个字就可能整整退一页。既然修不了(见 research/moonplus-po-format.md §8.4),
 -- 至少要让你在点「跳转」之前知道会往哪边走。
 --
+-- 刻意写得很短:它会被并进确认框第一行的括号里,长了自己就成了噪音。
+--
 -- remote / local 都是 { section = 章节序号(0 基), hash = 章内字符偏移 }。
 function Moonsync.describe_direction(remote, local_pos)
     if type(remote) ~= "table" or type(local_pos) ~= "table" then return nil end
@@ -283,21 +285,20 @@ function Moonsync.describe_direction(remote, local_pos)
     local rh, lh = tonumber(remote.hash),    tonumber(local_pos.hash)
     if not (rs and ls and rh and lh) then return nil end
 
-    local here = string.format("本机位置：第 %d 章，章内第 %d 字", ls, lh)
     if rs < ls then
-        return string.format("静读天下的位置比本机更早（第 %d 章）—— 跳过去是往回退\n%s", rs, here)
+        return string.format("在第 %d 章，比本机更早", rs)
     end
     if rs > ls then
-        return string.format("静读天下的位置比本机更晚（第 %d 章）—— 跳过去是前进\n%s", rs, here)
+        return string.format("在第 %d 章，比本机更晚", rs)
     end
 
     local d = rh - lh
     if d == 0 then
-        return string.format("静读天下的位置与本机完全相同\n%s", here)
+        return "与本机位置相同"
     elseif d < 0 then
-        return string.format("静读天下的位置比本机更早 %d 字 —— 跳过去是往回退\n%s", -d, here)
+        return string.format("比本机早 %d 字，会往回退", -d)
     end
-    return string.format("静读天下的位置比本机更晚 %d 字 —— 跳过去是前进\n%s", d, here)
+    return string.format("比本机晚 %d 字，是前进", d)
 end
 
 -- 主流程:取回 .po → 解析 → 取章节正文 → 截锚点 → 复用已有跳转确认流程
@@ -456,6 +457,8 @@ function Moonsync._do_push(plugin, job, opts)
     local silent = opts and opts.silent
     local server = plugin.server
     local where = string.format("第 %d 章，章内偏移 %d", job.section, job.hash)
+    -- 给用户看的那一句只留章节号:"章内偏移"是内部口径,对读者没有意义。
+    local short_where = string.format("第 %d 章", job.section)
 
     local backup_path = nil
     if job.old_body then
@@ -487,7 +490,7 @@ function Moonsync._do_push(plugin, job, opts)
     local verdict, brief
     if verified then
         verdict = "回读校验：一致 ✓"
-        brief   = "已同步给静读天下（" .. where .. "）"
+        brief   = "已同步给静读天下（" .. short_where .. "）"
     elseif type(body) == "string" then
         verdict = "回读校验：**不一致**，云端现在是 " .. body
         brief   = "静读天下已写入，但回读不一致"

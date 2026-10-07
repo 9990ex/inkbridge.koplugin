@@ -405,30 +405,30 @@ do
     local remote = { section = 167, hash = 1802 }
     local earlier = MS.describe_direction(remote, { section = 167, hash = 1806 })
     check("同章更早:报出差值", type(earlier) == "string"
-          and earlier:find("更早 4 字", 1, true) ~= nil, earlier)
-    check("同章更早:说明是往回退", type(earlier) == "string"
-          and earlier:find("往回退", 1, true) ~= nil, earlier)
-    check("带上本机位置便于对照", type(earlier) == "string"
-          and earlier:find("章内第 1806 字", 1, true) ~= nil, earlier)
+          and earlier:find("比本机早 4 字", 1, true) ~= nil, earlier)
+    check("同章更早:说明会往回退", type(earlier) == "string"
+          and earlier:find("会往回退", 1, true) ~= nil, earlier)
+    check("提示要短(并进确认框第一行,不换行)", type(earlier) == "string"
+          and #earlier < 40 and earlier:find("\n", 1, true) == nil, earlier)
 
     local later = MS.describe_direction(remote, { section = 167, hash = 1700 })
     check("同章更晚", type(later) == "string"
-          and later:find("更晚 102 字", 1, true) ~= nil
-          and later:find("前进", 1, true) ~= nil, later)
+          and later:find("比本机晚 102 字", 1, true) ~= nil
+          and later:find("是前进", 1, true) ~= nil, later)
 
     local same = MS.describe_direction(remote, { section = 167, hash = 1802 })
     check("完全相同要明说", type(same) == "string"
-          and same:find("完全相同", 1, true) ~= nil, same)
+          and same:find("与本机位置相同", 1, true) ~= nil, same)
 
     local ch_early = MS.describe_direction({ section = 100, hash = 5 },
                                            { section = 167, hash = 1806 })
     check("跨章:更早", type(ch_early) == "string"
-          and ch_early:find("更早（第 100 章）", 1, true) ~= nil, ch_early)
+          and ch_early:find("在第 100 章，比本机更早", 1, true) ~= nil, ch_early)
 
     local ch_late = MS.describe_direction({ section = 200, hash = 5 },
                                           { section = 167, hash = 1806 })
     check("跨章:更晚", type(ch_late) == "string"
-          and ch_late:find("更晚（第 200 章）", 1, true) ~= nil, ch_late)
+          and ch_late:find("在第 200 章，比本机更晚", 1, true) ~= nil, ch_late)
 
     eq("缺远端返回 nil", MS.describe_direction(nil, { section = 1, hash = 1 }), nil)
     eq("缺字段返回 nil", MS.describe_direction({}, { section = 1, hash = 1 }), nil)
