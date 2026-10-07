@@ -357,9 +357,8 @@ function InkBridge:_advanced_menu()
                   .. (Moonsync.auto_enabled() and "开启。" or "关闭。"))
           end },
         { text = "存储选项", sub_item_table_func = function() return self:_storage_menu() end },
-        { text = "检查更新",
-          help_text = "只查询有没有新版本，不会自动安装",
-          callback = function() self:check_update() end },
+        -- 检查更新**不单独占一项** —— 它和"看版本号"是同一件事,
+        -- 摆两处等于让用户猜哪个才是真的。点「关于插件」里的版本号即可。
         { text = "关于插件",
           sub_item_table = {
               { text = "当前版本 v" .. tostring(Meta.version or "unknown"),
