@@ -541,8 +541,42 @@ function InkBridge:_auto_check_remote()
         for _, c in pairs(newest) do cands[#cands + 1] = c end
 
         local updates = WebDAV.select_updates(cands, self:_get_seen(entry.book_id))
-        if #updates == 0 then return end
+        if #updates == 0 then
+            -- KO 那边没有更新,但静读天下可能变过 —— 接着看它
+            self:_auto_check_moon(entry)
+            return
+        end
         self:_ask_remote_update(entry, updates)
+    end)
+end
+
+-- 静读天下那份单独查:它没有记录项,而且 .po 里没有时间戳。
+-- 所以用**内容指纹** `(*章节, #偏移)` 当版本号 —— 内容变了就说明对面动过。
+--
+-- 防误报只有一条:远端位置与本机几乎相同时,多半正是"我们自己刚写出去的那次",
+-- 不打扰。除此之外**第一次见到就提示** —— 否则刚装上这一版时,
+-- 你在手机上改了位置、打开 KO 却没有任何反应,会以为功能坏了。
+function InkBridge:_auto_check_moon(entry)
+    Moonsync.peek_po(self, function(peek)
+        if not peek or type(peek.po) ~= "table" then return end
+
+        local key = "inkbridge_moon_fp:" .. tostring(entry.book_id)
+        local fp  = tostring(peek.po.star) .. "#" .. tostring(peek.po.hash)
+        if G_reader_settings:readSetting(key) == fp then return end   -- 没变过
+
+        local pos = Moonsync.local_position(self)
+        local same_place = pos and pos.section == tonumber(peek.po.star)
+            and math.abs((tonumber(pos.hash) or 0) - (tonumber(peek.po.hash) or 0)) < 200
+        G_reader_settings:saveSetting(key, fp)
+        if same_place then return end
+
+        UIManager:show(ConfirmBox:new{
+            text = string.format("静读天下有了新进度（第 %d 章）。\n\n要跳过去吗？",
+                                 (tonumber(peek.po.star) or 0) + 1),
+            ok_text = "跳转",
+            cancel_text = "忽略",
+            ok_callback = function() Moonsync.import_from_moon(self) end,
+        })
     end)
 end
 

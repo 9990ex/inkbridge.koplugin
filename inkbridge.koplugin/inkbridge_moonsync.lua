@@ -699,16 +699,28 @@ function Moonsync.peek_po(plugin, callback)
     if not po then callback(nil); return end
 
     -- Last-Modified 是 RFC1123 字符串。转换用 KOReader 自己的函数
-    -- (frontend/datetime.lua:322,是**模块函数**,点号调用);
-    -- 转不出来就退化成"没有新鲜度",不影响其余信息。
+    -- (frontend/datetime.lua:322,是**模块函数**,点号调用)。
+    -- 注意它用 os.time{} 把 GMT 当**本地时间**解释,所以要减掉本地相对 UTC 的偏移,
+    -- 否则东八区下"刚写出去的文件"会显示成"8 小时前"。
+    -- 转不出来就退化成"没有新鲜度"——它只是显示用,不该影响判断。
     local modified
     local hdr = type(headers) == "table"
         and (headers["last-modified"] or headers["Last-Modified"]) or nil
     if type(hdr) == "string" then
         local ok_dt, datetime = pcall(require, "datetime")
-        if ok_dt and datetime and datetime.stringRFC1123ToSeconds then
-            local ok_s, s = pcall(datetime.stringRFC1123ToSeconds, hdr)
-            if ok_s then modified = tonumber(s) end
+        if ok_dt and datetime then
+            local parsed
+            for _, fn in ipairs({ "stringRFC1123ToSeconds", "stringISO8601ToSeconds",
+                                  "stringRFC3659ToSeconds" }) do
+                if datetime[fn] then
+                    local ok_s, s = pcall(datetime[fn], hdr)
+                    if ok_s and tonumber(s) then parsed = tonumber(s); break end
+                end
+            end
+            if parsed then
+                local offset = os.difftime(os.time(), os.time(os.date("!*t")))
+                modified = parsed - (tonumber(offset) or 0)
+            end
         end
     end
 
