@@ -6,12 +6,12 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（764 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（776 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
    luajit tests/moon_spec.lua       # 159 条  位置格式的解析与生成
-   luajit tests/moonsync_spec.lua   # 213 条  静读天下互通（读、写、平台、手动选文件）
+   luajit tests/moonsync_spec.lua   # 225 条  静读天下互通（读、写、平台、手动选文件）
    luajit tests/update_spec.lua     #  48 条  版本比较与 release 解析
    luajit tests/webdav_spec.lua     # 184 条  云存储层（上传/下载/列目录/删除）
    luajit tests/main_spec.lua       #  79 条  主流程、保留策略、设备名探测

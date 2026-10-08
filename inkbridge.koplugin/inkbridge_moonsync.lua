@@ -43,11 +43,17 @@ Moonsync.DIR_SETTING = "inkbridge_moon_dir"
 -- 的阅读器里把进度捞出来"这件事,机制是通用的:**一份云端进度文件 + 一套
 -- (章节序号, 章内字符偏移) 的换算**。差别只在文件长什么样、放在哪个目录。
 --
--- 所以这里把"平台"显式列出来。status:
---   ok   —— 格式已用真机数据破译并验证过,能读能写;
---   todo —— **只有外壳,没有解码器**。菜单里会明写「格式待破译」,
---           绝不会静默地去猜别人的格式 —— 猜错的表现是"跳到书里随便一个地方",
---           用户几乎不可能察觉,这比直接报错危险得多。
+-- 所以这里把"平台"显式列出来。status 有三种:
+--   ok          —— 格式已用真机数据破译并验证过,能读能写;
+--   todo        —— **只有外壳,没有解码器**。菜单里明写「格式待破译」,
+--                  绝不会静默地去猜别人的格式 —— 猜错的表现是"跳到书里随便一个地方",
+--                  用户几乎不可能察觉,这比直接报错危险得多;
+--   unsupported —— 格式**已经破译完了**,但那边的通道读不懂 KOReader 的位置。
+--                  接上去最坏的结果不是"没效果",而是**把对方拖回前面**:
+--                  写回一份更晚的时间戳 + 一个它认不出的位置,它按时间戳接受了,
+--                  位置却没动;等它自己再写回时,旧位置就成了"新的"。
+--                  所以这种平台在菜单里明写「不建议接」,并告诉用户该走哪条路。
+--                  破译过程与逐行证据:research/readest-webdav-format.md。
 Moonsync.PLATFORMS = {
     {
         id     = "moon",
@@ -72,8 +78,15 @@ Moonsync.PLATFORMS = {
         short  = "Readest",
         dir    = nil,
         ext    = nil,
-        status = "todo",
-        note   = "格式待破译；需要先在真机上拿到它的进度文件样本",
+        status = "unsupported",
+        note   = "它的 WebDAV 通道只认 EPUB CFI，读不懂 KOReader 的 xpointer",
+        advice = "位置不会动：Readest 的 WebDAV 通道应用进度时只看 EPUB 位置（epubcfi(...)），"
+              .. "不解析 KOReader 的 xpointer，墨桥写进去它也不会跳。\n"
+              .. "更麻烦的是它会按时间戳接受这次写入 —— 一个更早的位置也会被当成「最新」，"
+              .. "把你在 Readest 里读到的进度拖回前面。\n\n"
+              .. "该走哪条路（都是免费的）：\n"
+              .. "· Readest 里：设置 → 阅读同步 → KOReader，位置用的就是 xpointer；\n"
+              .. "· KOReader 里：装官方插件 readest.koplugin（走 Readest 云）。",
     },
 }
 Moonsync.PLATFORM_SETTING = "inkbridge_platform"
@@ -91,6 +104,40 @@ end
 function Moonsync.get_platform()
     local raw = G_reader_settings and G_reader_settings:readSetting(Moonsync.PLATFORM_SETTING)
     return Moonsync.platform(raw)
+end
+
+-- 「这个平台为什么用不了」的话,**只在这里写一遍**。
+--
+-- 曾经「格式待破译」这句话在四个地方各写了一遍(菜单标签、目录项帮助、点它的弹窗、
+-- 列目录失败的原因),加第三种状态时必然改漏一处,然后四处自相矛盾 ——
+-- 用户看到的解释取决于他是从哪个入口点进来的,这是最坏的一种不一致。
+Moonsync.STATUS_LABEL = {
+    todo        = "格式待破译",
+    unsupported = "不建议接",
+}
+
+-- 菜单里显示的名字:能用的直接用名字,用不了的挂上状态,让人一眼知道为什么点不动。
+function Moonsync.platform_label(p)
+    local tag = p and p.status and Moonsync.STATUS_LABEL[p.status]
+    if not tag then return (p and p.name) or "?" end
+    return p.name .. "（" .. tag .. "）"
+end
+
+-- 不可用平台的说明。full=true 给"该怎么办"(点它的弹窗),
+-- full=false 给一句话原因(帮助文字、列目录失败的原因)。
+function Moonsync.platform_reason(p, full)
+    if not p then return "没有这个平台" end
+    if p.status == "unsupported" then
+        if full then
+            return "墨桥：" .. p.name .. " 这条路走不通。\n\n" .. (p.advice or p.note or "")
+        end
+        return p.note or (p.name .. " 这条路走不通")
+    end
+    if full then
+        return "墨桥：" .. p.name .. " 的进度文件格式还没破译，暂时不能同步。\n"
+            .. "需要先在真机上拿到它的进度文件样本。"
+    end
+    return p.note or (p.name .. " 的进度文件格式还没破译")
 end
 
 -- 这个平台的进度文件长什么样(纯函数,便于测试)。
@@ -772,10 +819,10 @@ function Moonsync.list_progress_files(plugin, callback)
         callback(nil, "还没有设置 WebDAV 目标")
         return
     end
-    -- 没破译格式的平台:**一个文件都不认**,而不是"全都让你选" ——
+    -- 扩展名为空的平台:**一个文件都不认**,而不是"全都让你选" ——
     -- 选错了会把一本电子书当进度文件读进来。
     if type(plat.ext) ~= "string" or plat.ext == "" then
-        callback(nil, plat.name .. "的进度文件格式还没破译，认不出是哪个文件")
+        callback(nil, Moonsync.platform_reason(plat, false) .. "，所以没有可列的文件")
         return
     end
 

@@ -25,16 +25,28 @@ KOReader 插件 InkBridge(墨桥)的开发文档。功能:通过 KOReader 自带
 
 | 测试文件 | 覆盖内容 |
 |---|---|
-| `tests/webdav_spec.lua`（96 条） | 远端路径校验、只读下载（含 404、非法路径、临时文件清理）、历史记录筛选与排序、上传的两条路径与 `provider.base` 副本/恢复、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
-| `tests/main_spec.lua`（37 条） | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII** |
-| `tests/state_spec.lua`（81 条） | 文本锚点规范化（UTF-8 按字符计数、**xpointer 字符偏移**）、阅读位置采集、记录校验与向后兼容、紧凑载荷的结构与体积 |
+| `tests/moon_spec.lua` | `.po` 进度格式的解析与生成（spine 索引、章内字符偏移、百分比回退、越界与畸形输入） |
+| `tests/moonsync_spec.lua` | 静读天下互通：下载列表、写回四关口（换算/自检/备份/回读校验）、兼容平台状态与文案、手动选文件、`peek_po` |
+| `tests/webdav_spec.lua` | 云存储层：远端路径校验、只读下载（404、非法路径、临时文件清理）、历史记录筛选与排序、上传两条路径与 `provider.base` 副本/恢复、列目录与 `show_unsupported` 还原、删除守卫、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
+| `tests/main_spec.lua` | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII**、**云端历史保留策略**、**设备名探测与截断** |
+| `tests/state_spec.lua` | 文本锚点规范化（UTF-8 按字符计数、**xpointer 字符偏移**）、阅读位置采集、记录校验与向后兼容、紧凑载荷的结构与体积 |
+| `tests/update_spec.lua` | 版本号比较与 release 页面解析 |
+
+> 断言**条数刻意不写在这里**：每加一条测试它就会变，这张表曾经因此烂掉过一版
+> （还留着早就不存在的文件与对不上的数字）。权威数字在 [`AGENTS.md`](AGENTS.md) 的
+> 硬性要求第 1 条；跑一遍也能直接看到。
 
 在仓库根目录执行(需要 LuaJIT —— 与 KOReader 运行时同款,LuaJIT 官网或包管理器都能装):
 
 ```bash
+sh tests/run_all.sh            # 一次跑完六份;任何一份崩掉都会被判为失败
+# 或者单跑:
+luajit tests/moon_spec.lua
+luajit tests/moonsync_spec.lua
 luajit tests/webdav_spec.lua
 luajit tests/main_spec.lua
 luajit tests/state_spec.lua
+luajit tests/update_spec.lua
 ```
 
 Windows 上可 `winget install DEVCOM.LuaJIT`,装完在
@@ -227,7 +239,15 @@ end
 2. 文本锚点的字符偏移是按 crengine 的字符口径解析的(与 `_utf8_*` 一致)。若某个 KOReader
    分支的 `text().N` 用的是别的口径,锚点会退化为「段落开头」水平 —— 需要真机走一次降级
    路径才能确认(目前只在单元测试里覆盖)。
-3. 云端历史文件只增不减,没有自动清理;若要回收空间需手动删。
+3. ~~云端历史文件只增不减,没有自动清理~~ —— **已解决**:0.3.0 起每台设备每本书只留最近
+   10 条(`InkBridge.HISTORY_KEEP` + `_prune_history`,上传成功后清理)。
+   还没在真机上确认的是**收敛是否稳定**(坚果云里每台设备的记录数稳定在 ≤10×设备数),
+   以及历史遗留的 `-KOReader.` 旧桶会被当成"另一台设备"各自留 10 条(不会误删,但占位)。
 4. 真机矩阵仍不完整:目前在 Android 与 Kindle 上验证过完整流程,汉王 C7T 只作为上传端
    参与过,尚未做「同一台设备之间」与更多 KOReader 版本的交叉验证。
 5. **分页模式的页级精度**(见上一节):用户判定不影响阅读,记录在案,暂不修。
+6. **兼容平台的第三家(Readest)已判定不做**,不是在等样本:它的 WebDAV 通道只认 EPUB CFI、
+   不解析 KOReader 的 xpointer,位置传不过去,还可能按时间戳把对方拖回前面。
+   插件里因此有了第三种状态 `unsupported`(菜单写「不建议接」并指路官方 KOReader 通道)。
+   完整破译与逐条源码证据:[`research/readest-webdav-format.md`](research/readest-webdav-format.md)。
+   开源阅读(Legado)仍然只差**一份真机进度文件样本**。

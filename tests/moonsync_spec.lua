@@ -695,6 +695,31 @@ do
     eq("nil 不认", MS.is_progress_file(nil, moon), false)
     eq("没有扩展名的空串不认", MS.is_progress_file("abc", { ext = "" }), false)
 
+    -- 第三种状态:格式**已经破译完了**,是那边的通道读不懂 KOReader 的位置。
+    -- 文案必须与"还没破译"区分开 —— 否则用户会以为再给一份样本就能用,
+    -- 而真实原因是这条路本身就走不通(证据:research/readest-webdav-format.md)。
+    local readest = MS.platform("readest")
+    eq("Readest 标为不建议接", readest.status, "unsupported")
+    eq("它同样一个文件都不认", MS.is_progress_file("config.json", readest), false)
+    check("菜单标签写明不建议接",
+          MS.platform_label(readest):find("不建议接", 1, true) ~= nil,
+          MS.platform_label(readest))
+    eq("能用的平台标签不加后缀", MS.platform_label(moon), moon.name)
+    eq("还没破译的标签写待破译",
+       MS.platform_label(legado), legado.name .. "（格式待破译）")
+    check("说明里点出真原因(CFI/xpointer)",
+          MS.platform_reason(readest, false):find("xpointer", 1, true) ~= nil,
+          MS.platform_reason(readest, false))
+    check("真原因里不该再提「破译」——它早就破了",
+          MS.platform_reason(readest, false):find("破译", 1, true) == nil,
+          MS.platform_reason(readest, false))
+    check("点它的弹窗要给出该走哪条路",
+          MS.platform_reason(readest, true):find("阅读同步", 1, true) ~= nil,
+          MS.platform_reason(readest, true))
+    check("还能救的那家仍然只说破译",
+          MS.platform_reason(legado, false):find("破译", 1, true) ~= nil,
+          MS.platform_reason(legado, false))
+
     -- 切平台必须连带换目录:留着上一家的目录会让新平台去读旧平台的文件夹
     MS.set_dir("我自己改过的目录")
     eq("先确认目录确实被改过", MS.get_dir(), "我自己改过的目录")
@@ -723,6 +748,18 @@ do
     eq("格式没破译:拿不到列表", got_files, nil)
     check("并说明是没破译",
           type(got_err) == "string" and got_err:find("破译", 1, true) ~= nil, got_err)
+
+    -- 已经破译但通道不兼容的那家:同样列不出东西,但**原因必须不一样** ——
+    -- 用户看完得知道"别再找样本了,换条路"。
+    settings["inkbridge_platform"] = "readest"
+    got_files, got_err = nil, nil
+    MS.list_progress_files({ server = SERVER2, ui = {} },
+                           function(f, e) got_files, got_err = f, e end)
+    eq("通道不兼容:也拿不到列表", got_files, nil)
+    check("原因是通道而不是缺样本",
+          type(got_err) == "string" and got_err:find("xpointer", 1, true) ~= nil, got_err)
+    check("并且不再说「破译」",
+          type(got_err) == "string" and got_err:find("破译", 1, true) == nil, got_err)
     settings["inkbridge_platform"] = nil
     MS.set_platform("moon")
 

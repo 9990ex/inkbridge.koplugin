@@ -521,7 +521,7 @@ function InkBridge:_webdav_menu()
         { text = (plat.short or plat.name) .. "同步目录",
           help_text = usable
               and "相对上面那个目录；以 / 开头表示从服务器根算起"
-              or "格式待破译，暂时用不上",
+              or Moonsync.platform_reason(plat, false),
           enabled_func = function() return usable end,
           callback = function() self:set_moon_dir() end },
         -- 手动选文件不是"高级功能",而是自动认不出时的**唯一出路**,
@@ -537,22 +537,27 @@ end
 
 -- 兼容平台。
 --
--- 目前只有静读天下真正可用。另外两家**刻意也列出来,并写明「格式待破译」**:
+-- 目前只有静读天下真正可用。另外两家**刻意也列出来**,但原因不同:
 --   * 藏起来会让人以为这个插件只打算支持一家,而"从另一台设备的阅读器里捞进度"
 --     这件事本身是通用的,只差一份格式样本;
---   * 但点它们**不会**让插件去猜别人的格式 —— 猜错的表现是"跳到书里随便一个位置",
---     比直接说"还不行"危险得多,所以只给一句说明。
+--   * 开源阅读:只差一份样本 → 「格式待破译」;
+--   * Readest:格式**已经破译完了**,是那条通道读不懂 KOReader 的位置
+--     (证据:research/readest-webdav-format.md)→ 「不建议接」,并告诉用户该走官方通道。
+-- 点它们**都不会**让插件去猜别人的格式 —— 猜错的表现是"跳到书里随便一个位置",
+-- 比直接说"还不行"危险得多,所以只给一句说明。
+--
+-- 三种状态的标签与说明文字全部来自 Moonsync.platform_label / platform_reason,
+-- 这里不再自己拼字符串(见 moonsync 里那段注释)。
 function InkBridge:_platform_menu()
     local items = {}
     for _, p in ipairs(Moonsync.PLATFORMS) do
         items[#items + 1] = {
-            text = (p.status == "ok") and p.name or (p.name .. "（格式待破译）"),
+            text = Moonsync.platform_label(p),
             help_text = p.note,
             checked_func = function() return Moonsync.get_platform().id == p.id end,
             callback = function()
                 if p.status ~= "ok" then
-                    show("墨桥：" .. p.name .. " 的进度文件格式还没破译，暂时不能同步。\n"
-                        .. "需要先在真机上拿到它的进度文件样本。")
+                    show(Moonsync.platform_reason(p, true))
                     return
                 end
                 Moonsync.set_platform(p.id)
