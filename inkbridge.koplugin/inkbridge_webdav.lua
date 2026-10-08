@@ -200,6 +200,97 @@ function WebDAV.start_dir_pick_on_single_server(plugin, on_saved)
     return handled == true
 end
 
+-- 云浏览器**没有"取消"回调**:用户在选目录界面里直接返回时,我们挂在 manager 上的
+-- caller_choose_folder_callback 会**留下来**。后果不只是多一行界面:
+--   1) KOReader 自己会因此把云盘菜单里的"下载/上传"项灰掉
+--      (cloudstorage.lua:483,592,601 都会看这个字段);
+--   2) 用户以后从文件管理器浏览云盘、长按某个目录时,会莫名弹出"目录已保存",
+--      而静读天下同步目录被**悄悄改掉** —— 正是本项目最忌讳的那类错误。
+--
+-- 没有取消钩子可用,所以退一步:**下一次有人打开云浏览器**时把它清掉。
+-- 只有我们自己打开的那一次例外(那时字段刚设好、正要被用)。
+local function install_stale_callback_guard(manager)
+    if manager.__inkbridge_guard_installed then return end
+    local real_open = manager.openCloudServer
+    if type(real_open) ~= "function" then return end
+    manager.__inkbridge_guard_installed = true
+    manager.openCloudServer = function(self, url, cb, do_show)
+        if not self.__inkbridge_picking then
+            self.caller_choose_folder_callback = nil
+        end
+        self.__inkbridge_picking = false
+        return real_open(self, url, cb, do_show)
+    end
+end
+
+-- 借 **KOReader 自己的云浏览器** 选一个目录,把选中的那一层回调出去。
+--
+-- 为什么复用它,而不是自己写一个"一层一层点"的浏览器:
+--   1. 那是用户已经在用的那个界面(文件管理器 → 云盘),排序、编码、服务器选择、
+--      断网提示都由 KOReader 负责 —— 这些我们自己写一遍,就又多一处会和真实行为错开;
+--   2. 自己写的浏览器只覆盖"列目录"这一条路,而用户真正熟悉的是那一个。
+-- 代价(如实记下):**选目录必须长按**(cloudstorage.lua:144-151 插入
+-- "Long-press here to choose current folder",:241-245 判断),这是 KOReader 定的,
+-- 墨桥改不了。
+--
+-- 回调 on_folder(chosen):chosen = { name, type, address, username, password, url },
+-- 其中 url 是**相对 address 的路径**(cloudstorage.lua:280-287),没有前导斜杠。
+-- 怎么把这个路径变成"静读天下同步目录"的值由调用方决定(见 Moonsync.dir_from_chosen)。
+--
+-- 返回 true 表示已接管;false 表示云浏览器不可用,调用方应退回手动输入。
+-- **任何一步不顺都返回 false** —— 借用别人的界面只该是优化,不该成为新的故障点。
+function WebDAV.pick_folder(plugin, on_folder)
+    if type(on_folder) ~= "function" then return false end
+    -- 没有 WebDAV 目标时**不去打开浏览器**:选出来的路径是相对某台服务器的,
+    -- 而没有目标就无从判断"相对谁",放进来只会得到一个装得像模像样的错值。
+    -- 调用方(选目录那一项)在没有目标时本来就不会走到这里,这里是第二道闸。
+    local configured = plugin and plugin.server
+    if type(configured) ~= "table" or configured.type ~= "webdav" then return false end
+    local ok_all, handled = pcall(function()
+        local ui = plugin and plugin.ui
+        local manager = ui and ui.cloudstorage
+        if not manager or not is_callable(manager.openCloudServer) then return false end
+
+        -- 刷新 manager.servers(它平时只在云存储界面被打开时才加载)
+        if is_callable(manager.loadSettings) then
+            pcall(function() manager:loadSettings() end)
+        end
+        local servers = manager.servers
+        if type(servers) ~= "table" or #servers == 0 then return false end
+
+        -- 从**已经保存的那台服务器**开始浏览:静读天下的目录是相对它的算的,
+        -- 换一台服务器开始,会得到一个看起来合法、其实对不上的路径。
+        -- 找不到同一台(被删/改过名)时退回第一台 —— 仍然可以用,只是要用户自己认路。
+        local saved = configured
+        local idx = 1
+        for i, s in ipairs(servers) do
+            if s.address == saved.address and s.username == saved.username then
+                idx = i
+                break
+            end
+        end
+        local url = servers[idx] and servers[idx].url
+        if type(url) ~= "string" then return false end
+
+        install_stale_callback_guard(manager)
+        manager.server_idx = idx
+        -- 用 caller_choose_folder_callback 字段而不是 openCloudServer 的第 2 个参数:
+        -- 它是在**异步回调里**才被读的(cloudstorage.lua:169),传参有可能在那个时序下丢失;
+        -- 写字段则确定生效。
+        manager.caller_choose_folder_callback = function(chosen)
+            -- 用完立刻清掉:否则以后用户从文件管理器正常浏览云盘、长按目录时,
+            -- 会再次触发我们这个回调,把一次普通浏览当成"给墨桥选了目录"。
+            manager.caller_choose_folder_callback = nil
+            on_folder(chosen)
+        end
+        manager.__inkbridge_picking = true      -- 告诉守卫:这一次是我们自己的
+        manager:openCloudServer(url, nil, true)
+        return true
+    end)
+    if not ok_all then return false end
+    return handled == true
+end
+
 function WebDAV.pick_server(plugin)
     local function save(server)
         plugin.server = server
@@ -481,7 +572,7 @@ function WebDAV.delete_file(plugin, url, callback)
     if not dispatched then finish(false, tostring(err)) end
 end
 
--- 列出一个**任意目录**(只读元数据,不下载内容),把原始条目交给下面的两个包装函数。
+-- 列出一个**任意目录**(只读元数据,不下载内容),把文件项交给回调。
 --
 -- 为什么需要它:静读天下的 .po 不在当前 server.url 的历史记录里,要单独列它那个目录,
 -- 才能拿到**服务器时间**(列表项自带的 modification,Unix 秒)—— 这正是 KO 记录
@@ -489,11 +580,7 @@ end
 -- 已经验证可用的路。列表只读元数据,**不消耗网盘的下载额度**。
 --
 -- folder_path 以 "/" 开头表示从服务器根算起,否则相对 server.url。
---
--- 这一层是 list_folder / list_dirs **共用**的:provider.base 的副本与还原、
--- show_unsupported 的临时开关、"listFolder 返回 nil 不等于空目录"这三件事
--- 必须有且只有一处实现 —— 抄一遍就等于埋一个"只改了其中一份"的坑。
-local function list_raw(plugin, folder_path, callback)
+function WebDAV.list_folder(plugin, folder_path, callback)
     local server = plugin and plugin.server
     if type(server) ~= "table" or server.type ~= "webdav" then
         callback(false, nil, "WebDAV destination is not configured")
@@ -549,52 +636,16 @@ local function list_raw(plugin, folder_path, callback)
         if not ok then finish(false, nil, tostring(result)); return end
         -- listFolder 在网络/认证/HTTP 出错时可能返回 nil，不能等同于空目录
         if type(result) ~= "table" then finish(false, nil, "WebDAV list failed"); return end
-        finish(true, result, nil)
+        local out = {}
+        for _, item in ipairs(result) do
+            if item.is_file then out[#out + 1] = item end
+        end
+        finish(true, out, nil)
     end
     local dispatched, err = pcall(provider.run, request)
 
     if settings_table then settings_table.show_unsupported = had_unsupported end
     if not dispatched then finish(false, nil, tostring(err)) end
-end
-
--- 只列**文件**。调用方(找 `.po`)拿它当文件名用,混进目录会让判断多一堆 if。
-function WebDAV.list_folder(plugin, folder_path, callback)
-    list_raw(plugin, folder_path, function(ok, items, err)
-        if not ok then callback(false, nil, err); return end
-        local out = {}
-        for _, item in ipairs(items) do
-            if item.is_file then out[#out + 1] = item end
-        end
-        callback(true, out, nil)
-    end)
-end
-
--- 只列**子目录**,给"点选目录"用:想点选,就得先看得见目录。
---
--- 回调 (ok, dirs, err):dirs = { { name = "Cache" }, … },按名字排序(忽略大小写)。
--- 目录名在 provider 那边带着尾斜杠(text = name .. "/"),这里去掉再交出去:
--- 显示时不该带斜杠,拼接路径由调用方负责。
---
--- 只认 provider **明确标了 `is_folder`** 的项:没有这个标记的条目(某些服务器会
--- 返回一些怪条目)宁可不当目录 —— 把一个文件当目录点进去,只会得到一个空列表,
--- 而用户会以为"目录选错了"。
-function WebDAV.list_dirs(plugin, folder_path, callback)
-    list_raw(plugin, folder_path, function(ok, items, err)
-        if not ok then callback(false, nil, err); return end
-        local out = {}
-        for _, item in ipairs(items) do
-            if item.is_folder then
-                local name = tostring(item.text or ""):gsub("/+$", "")
-                if name ~= "" then out[#out + 1] = { name = name } end
-            end
-        end
-        table.sort(out, function(a, b)
-            local la, lb = a.name:lower(), b.name:lower()
-            if la == lb then return a.name < b.name end
-            return la < lb
-        end)
-        callback(true, out, nil)
-    end)
 end
 
 -- 显示可读的历史记录列表。只显示最近三条，具体跳转仍由用户确认。

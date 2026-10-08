@@ -203,13 +203,19 @@ end
 
 -- 让用户指定静读天下的云同步目录。
 --
--- 默认走**点选**(Moonsync.pick_dir):墨水屏上手打 "Apps/Books/.Moon+/Cache"
--- 这种路径又慢又容易错,而且错了**不报错** —— 表现只是"读不到进度"。
--- 点选顺带能看见目录到底存不存在;要填目标之外的绝对路径仍可"手动输入"。
+-- 主路径是**借 KOReader 自己的云浏览器**:从「墨桥同步目录」那台服务器开始浏览,
+-- 长按要用的那一层 → 确认。用户熟悉那个界面,排序/编码/断网提示都由 KOReader 负责 ——
+-- 自己再写一个"一层一层点"的浏览器,只会多一处与真实行为错开的可能。
 --
+-- 云存储不可用(旧版或被裁剪)时退回手动输入,不让"选目录"彻底没有入口。
 -- 仍然刻意**不做自动探测**:目录猜错会读到别的书的进度,而用户几乎不可能察觉。
 function InkBridge:set_moon_dir()
-    Moonsync.pick_dir(self)
+    local handled = WebDAV.pick_folder(self, function(chosen)
+        local _, msg = Moonsync.apply_dir_choice(self, chosen)
+        if msg then show(msg) end
+    end)
+    if handled then return end
+    Moonsync.ask_dir()
 end
 
 -- 只读下载用的本地临时文件。
@@ -487,6 +493,11 @@ end
 function InkBridge:_webdav_menu()
     local plat = Moonsync.get_platform()
     local usable = plat.status == "ok"
+    -- 静读天下同步目录是**相对墨桥同步目录**算的(也可以填从服务器根算起的绝对路径),
+    -- 但"没有目标"时先选它没有意义:选出来的路径无从判断相对谁。
+    -- 所以这里直接把它挡住并说明原因,而不是让用户选完才被拒绝。
+    local srv = self.server
+    local has_target = type(srv) == "table" and srv.type == "webdav"
     return {
         { text = "墨桥同步目录",
           help_text = "墨桥进度存放的目录（配了多台服务器时先选服务器）",
@@ -496,10 +507,10 @@ function InkBridge:_webdav_menu()
           help_text = "当前：" .. plat.name,
           sub_item_table_func = function() return self:_platform_menu() end },
         { text = (plat.short or plat.name) .. "同步目录",
-          help_text = usable
-              and "从服务器上点选（只列目录，不耗下载额度）；也可手动输入绝对路径"
-              or Moonsync.platform_reason(plat, false),
-          enabled_func = function() return usable end,
+          help_text = (not usable and Moonsync.platform_reason(plat, false))
+              or (not has_target and "先设置上面的「墨桥同步目录」")
+              or "用 KOReader 的云浏览器选：点进目录，**长按**要用的那一层再确认",
+          enabled_func = function() return usable and has_target end,
           callback = function() self:set_moon_dir() end },
         -- 手动选文件不是"高级功能",而是自动认不出时的**唯一出路**,
         -- 所以和目录摆在一起,不藏进高级选项。
