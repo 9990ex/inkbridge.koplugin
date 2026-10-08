@@ -45,7 +45,17 @@
    在 Windows 上用 PowerShell 时，中文提交信息请写进文件再 `git commit -F <文件>`，
    避免命令行编码破坏。
 
-6. **发布包**用 `墨桥-samples/build_release.py` 生成（布局 = `LICENSE` + `inkbridge.koplugin/`，
+6. **绝对不要自己往 GitHub 上发任何东西**。不 `push`、不打 tag、不建 release、不删 release、
+   不改远端分支、不动 `gh` 的任何写操作 —— **除非用户在当轮对话里明确说了"发 / 推"**。
+   没说就只交**本地包**（`releases/<包名>.zip`）与本地提交。
+
+   这一条比"测试全绿"更严格：**必须等用户在本机真机测试通过，才能推送到 GitHub**。
+   插件里凡是碰界面 / 云存储交互的改动，我在这个环境里**跑不了真机** —— 834 条断言全绿
+   只证明"没写错"，不证明"能用"。已经发生过一次：0.3.3 自写的目录浏览器测试全绿、
+   实机却根本用不了，包发出去之后被迫删 release 撤版。
+   已经发出去的东西要撤回，同样等用户明确指示再动。
+
+7. **发布包**用 `墨桥-samples/build_release.py` 生成（布局 = `LICENSE` + `inkbridge.koplugin/`，
    打完逐文件 sha256 校验），包名 `inkbridge.moon.koplugin-v<版本>.zip`。
    **包内目录永远是 `inkbridge.koplugin/`** —— KOReader 靠它认插件，改了老用户升级时
    会多出一个旧插件目录同时跑。发完要**下载回来验 MD5**。
@@ -53,7 +63,7 @@
    **当前在用的那一版**用普通 release —— 插件里的「检查更新」走 `/releases/latest`，
    标了 prerelease 就永远看不到它。
 
-7. 源码是**纯 LF**（`.gitattributes` 里 `* -text`），不要引入 CRLF。
+8. 源码是**纯 LF**（`.gitattributes` 里 `* -text`），不要引入 CRLF。
 
 ## 已知的、不要"顺手修"的东西
 

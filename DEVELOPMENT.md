@@ -64,6 +64,11 @@ git diff HEAD -- inkbridge.koplugin            # 未提交的改动
 git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
 ```
 
+> **往 GitHub 上发东西（push / tag / release）必须先得到用户明确指示，
+> 而且要等他在这台机器之外的真机上测试通过。** 回归测试全绿只说明"没写错",
+> 不说明"能用" —— 插件碰界面与云存储交互的地方,开发环境里跑不了真机。
+> 详见 [`AGENTS.md`](AGENTS.md) 硬性要求第 6 条。
+
 基线标签 `v0.2.13-alpha` 是「从旧工作目录迁移过来的原始状态」。
 
 > 历史教训:迁移之前没有 git,只能用「复制目录 + 打 zip」记版本,导致同名内容的多份副本并存
