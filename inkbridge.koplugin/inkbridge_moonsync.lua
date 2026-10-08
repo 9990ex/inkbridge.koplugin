@@ -226,7 +226,10 @@ function Moonsync.apply_dir_choice(plugin, chosen)
     local saved = (plugin and plugin.server) or {}
     -- 换了服务器就等于换了命名空间:选中的路径是相对**那台**服务器的,
     -- 而墨桥取文件时永远是拼在已保存的那台上。放进来的话,表现就是"能取到路径但读不到"。
-    if chosen.address ~= saved.address then
+    -- 只在**已保存的目标里确实有地址**时才比:老版本存下来的目标可能没有 address 字段,
+    -- 那种情况下没有可比的对象,照常按"从服务器根算起"存绝对路径即可(见 dir_from_chosen)。
+    if type(saved.address) == "string" and saved.address ~= ""
+            and chosen.address ~= saved.address then
         return false, "墨桥：选中的目录在另一台服务器上：\n" .. tostring(chosen.address)
             .. "\n请先在「墨桥同步目录」里切到它，再回来选这一层。"
     end

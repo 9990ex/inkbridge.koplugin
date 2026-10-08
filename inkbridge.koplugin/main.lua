@@ -493,11 +493,6 @@ end
 function InkBridge:_webdav_menu()
     local plat = Moonsync.get_platform()
     local usable = plat.status == "ok"
-    -- 静读天下同步目录是**相对墨桥同步目录**算的(也可以填从服务器根算起的绝对路径),
-    -- 但"没有目标"时先选它没有意义:选出来的路径无从判断相对谁。
-    -- 所以这里直接把它挡住并说明原因,而不是让用户选完才被拒绝。
-    local srv = self.server
-    local has_target = type(srv) == "table" and srv.type == "webdav"
     return {
         { text = "墨桥同步目录",
           help_text = "墨桥进度存放的目录（配了多台服务器时先选服务器）",
@@ -507,10 +502,10 @@ function InkBridge:_webdav_menu()
           help_text = "当前：" .. plat.name,
           sub_item_table_func = function() return self:_platform_menu() end },
         { text = (plat.short or plat.name) .. "同步目录",
-          help_text = (not usable and Moonsync.platform_reason(plat, false))
-              or (not has_target and "先设置上面的「墨桥同步目录」")
-              or "用 KOReader 的云浏览器选：点进目录，**长按**要用的那一层再确认",
-          enabled_func = function() return usable and has_target end,
+          help_text = usable
+              and "用 KOReader 的云浏览器选：点进目录，**长按**要用的那一层再确认"
+              or Moonsync.platform_reason(plat, false),
+          enabled_func = function() return usable end,
           callback = function() self:set_moon_dir() end },
         -- 手动选文件不是"高级功能",而是自动认不出时的**唯一出路**,
         -- 所以和目录摆在一起,不藏进高级选项。

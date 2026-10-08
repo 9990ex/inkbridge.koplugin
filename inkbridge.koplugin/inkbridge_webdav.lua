@@ -168,6 +168,12 @@ end
 --
 -- 返回 true 表示已接管(进了目录浏览);false 表示调用方照旧走"列服务器"流程。
 -- **任何一步不顺都返回 false** —— 这条捷径只该是优化,不该成为新的故障点。
+--
+-- ⚠️ 注意:这条捷径是照**老 API** 写的。现行 KOReader 把 **Cloud 插件**注册为
+-- `ui.cloudstorage`,而 `openCloudServer` 在 CloudStorage 对象上 —— Cloud 插件没有它,
+-- 所以下面那个 is_callable 判断**恒为 false**,这条捷径在现行版本上不会触发
+-- (真正生效的是 Cloud:onShowCloudStorageList,见 pick_folder 的注释)。
+-- 保留它是为了老版本;但**不要照抄它的内部实现**,那正是 pick_folder 第一次写错的原因。
 function WebDAV.start_dir_pick_on_single_server(plugin, on_saved)
     local ok_all, handled = pcall(function()
         local ui = plugin and plugin.ui
@@ -200,95 +206,41 @@ function WebDAV.start_dir_pick_on_single_server(plugin, on_saved)
     return handled == true
 end
 
--- 云浏览器**没有"取消"回调**:用户在选目录界面里直接返回时,我们挂在 manager 上的
--- caller_choose_folder_callback 会**留下来**。后果不只是多一行界面:
---   1) KOReader 自己会因此把云盘菜单里的"下载/上传"项灰掉
---      (cloudstorage.lua:483,592,601 都会看这个字段);
---   2) 用户以后从文件管理器浏览云盘、长按某个目录时,会莫名弹出"目录已保存",
---      而静读天下同步目录被**悄悄改掉** —— 正是本项目最忌讳的那类错误。
---
--- 没有取消钩子可用,所以退一步:**下一次有人打开云浏览器**时把它清掉。
--- 只有我们自己打开的那一次例外(那时字段刚设好、正要被用)。
-local function install_stale_callback_guard(manager)
-    if manager.__inkbridge_guard_installed then return end
-    local real_open = manager.openCloudServer
-    if type(real_open) ~= "function" then return end
-    manager.__inkbridge_guard_installed = true
-    manager.openCloudServer = function(self, url, cb, do_show)
-        if not self.__inkbridge_picking then
-            self.caller_choose_folder_callback = nil
-        end
-        self.__inkbridge_picking = false
-        return real_open(self, url, cb, do_show)
-    end
-end
-
 -- 借 **KOReader 自己的云浏览器** 选一个目录,把选中的那一层回调出去。
 --
--- 为什么复用它,而不是自己写一个"一层一层点"的浏览器:
---   1. 那是用户已经在用的那个界面(文件管理器 → 云盘),排序、编码、服务器选择、
---      断网提示都由 KOReader 负责 —— 这些我们自己写一遍,就又多一处会和真实行为错开;
---   2. 自己写的浏览器只覆盖"列目录"这一条路,而用户真正熟悉的是那一个。
--- 代价(如实记下):**选目录必须长按**(cloudstorage.lua:144-151 插入
--- "Long-press here to choose current folder",:241-245 判断),这是 KOReader 定的,
--- 墨桥改不了。
---
 -- 回调 on_folder(chosen):chosen = { name, type, address, username, password, url },
--- 其中 url 是**相对 address 的路径**(cloudstorage.lua:280-287),没有前导斜杠。
--- 怎么把这个路径变成"静读天下同步目录"的值由调用方决定(见 Moonsync.dir_from_chosen)。
+-- url 是**相对 address 的路径**(cloudstorage.lua:280-287 交出来的形状)。
+-- 怎么把它变成"静读天下同步目录"的值,由调用方决定(见 Moonsync.dir_from_chosen)。
 --
--- 返回 true 表示已接管;false 表示云浏览器不可用,调用方应退回手动输入。
--- **任何一步不顺都返回 false** —— 借用别人的界面只该是优化,不该成为新的故障点。
+-- ★ 这里栽过一次,原因值得留档:**不能自己去开浏览器**。
+--   `ui.cloudstorage` 在现行 KOReader 上是 **Cloud 插件**
+--   (plugins/cloudstorage.koplugin/main.lua —— 它注册给 KOReader 的就是自己),
+--   而 `openCloudServer` / `loadSettings` 是 **CloudStorage 对象**上的方法,
+--   Cloud 插件**没有**这两个。上面那个 start_dir_pick_on_single_server 就是照
+--   老 API 写的,在现行版本上 `is_callable(manager.openCloudServer)` 恒为 false,
+--   也就是**一次都不会触发**;我照抄它的内部实现,结果同样恒为 false ——
+--   表现就是"点进去又变成输入框",而没有任何报错。
+--
+--   通用入口只有一个:**Cloud:onShowCloudStorageList(cb)**。它自己 new 一个
+--   CloudStorage、把 cb 装成 caller_choose_folder_callback、再 show()
+--   (有 default_server 就直接进那台服务器的目录浏览,否则先列服务器)。
+--   KOReader 自己的 exporter / statistics / vocabbuilder 插件也都是这么调它的。
+--   列目录、排序、编码、服务器选择、断网提示全部归 KOReader。
+--
+-- 返回 true 表示已接管;false 表示云存储功能不可用,调用方应退回手动输入。
 function WebDAV.pick_folder(plugin, on_folder)
     if type(on_folder) ~= "function" then return false end
-    -- 没有 WebDAV 目标时**不去打开浏览器**:选出来的路径是相对某台服务器的,
-    -- 而没有目标就无从判断"相对谁",放进来只会得到一个装得像模像样的错值。
-    -- 调用方(选目录那一项)在没有目标时本来就不会走到这里,这里是第二道闸。
-    local configured = plugin and plugin.server
-    if type(configured) ~= "table" or configured.type ~= "webdav" then return false end
-    local ok_all, handled = pcall(function()
-        local ui = plugin and plugin.ui
-        local manager = ui and ui.cloudstorage
-        if not manager or not is_callable(manager.openCloudServer) then return false end
+    -- 老 API(ui.cloudstorage 就是 CloudStorage 的年代)才可能走这条捷径;
+    -- 现行版本上它安静返回 false,由下面那个通用入口接管。
+    if WebDAV.start_dir_pick_on_single_server(plugin, on_folder) then return true end
 
-        -- 刷新 manager.servers(它平时只在云存储界面被打开时才加载)
-        if is_callable(manager.loadSettings) then
-            pcall(function() manager:loadSettings() end)
-        end
-        local servers = manager.servers
-        if type(servers) ~= "table" or #servers == 0 then return false end
-
-        -- 从**已经保存的那台服务器**开始浏览:静读天下的目录是相对它的算的,
-        -- 换一台服务器开始,会得到一个看起来合法、其实对不上的路径。
-        -- 找不到同一台(被删/改过名)时退回第一台 —— 仍然可以用,只是要用户自己认路。
-        local saved = configured
-        local idx = 1
-        for i, s in ipairs(servers) do
-            if s.address == saved.address and s.username == saved.username then
-                idx = i
-                break
-            end
-        end
-        local url = servers[idx] and servers[idx].url
-        if type(url) ~= "string" then return false end
-
-        install_stale_callback_guard(manager)
-        manager.server_idx = idx
-        -- 用 caller_choose_folder_callback 字段而不是 openCloudServer 的第 2 个参数:
-        -- 它是在**异步回调里**才被读的(cloudstorage.lua:169),传参有可能在那个时序下丢失;
-        -- 写字段则确定生效。
-        manager.caller_choose_folder_callback = function(chosen)
-            -- 用完立刻清掉:否则以后用户从文件管理器正常浏览云盘、长按目录时,
-            -- 会再次触发我们这个回调,把一次普通浏览当成"给墨桥选了目录"。
-            manager.caller_choose_folder_callback = nil
-            on_folder(chosen)
-        end
-        manager.__inkbridge_picking = true      -- 告诉守卫:这一次是我们自己的
-        manager:openCloudServer(url, nil, true)
+    local ui = plugin and plugin.ui
+    local manager = ui and ui.cloudstorage
+    if manager and is_callable(manager.onShowCloudStorageList) then
+        manager:onShowCloudStorageList(on_folder)
         return true
-    end)
-    if not ok_all then return false end
-    return handled == true
+    end
+    return false
 end
 
 function WebDAV.pick_server(plugin)

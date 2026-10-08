@@ -620,113 +620,79 @@ do
 end
 
 -- ── 借 KOReader 的云浏览器选一个目录(静读天下同步目录) ────────────────────
--- 与上面那条捷径同源,但**只读不写**:它不碰 plugin.server,只把选中的那一层交出去。
--- 这里要钉死的是:从**已保存的那台服务器**开始浏览(否则会得到一个看似合法、
--- 其实对不上的路径),以及回调用完立刻清掉(否则以后普通浏览长按目录会被当成"给墨桥选目录")。
+-- ★ 这一节钉的是一个**真实踩过的坑**:现行 KOReader 把 **Cloud 插件**注册为
+--   `ui.cloudstorage`,而 `openCloudServer` / `loadSettings` 是 CloudStorage 对象上的方法
+--   —— Cloud 插件没有它们。所以照抄上面那条"单服务器捷径"的内部实现,会因为它
+--   `is_callable(manager.openCloudServer)` 恒为 false 而**永远静默失败**:
+--   表现就是"点进去又变成输入框",没有任何报错。通用入口只有
+--   `Cloud:onShowCloudStorageList(cb)`(KOReader 自己的 exporter/statistics 也这么调它)。
 print("== pick_folder（借云浏览器选目录）==")
 do
-    local function fake_manager(servers)
+    -- Cloud 插件形状的假对象:**有** onShowCloudStorageList,**没有** openCloudServer
+    local function fake_cloud()
         return {
-            servers = servers,
-            loaded  = false,
-            opened  = nil,
-            loadSettings = function(self) self.loaded = true end,
-            openCloudServer = function(self, url, cb, do_show)
-                self.opened = { url = url, cb = cb, do_show = do_show }
+            shown_cb = nil,
+            shown = 0,
+            onShowCloudStorageList = function(self, cb)
+                self.shown_cb = cb
+                self.shown = self.shown + 1
             end,
         }
     end
-    local SAVED = { name = "坚果云", type = "webdav", address = "https://dav.example.com/dav",
-                    username = "u", password = "p", url = "我的同步/墨桥" }
+    local CHOSEN = { name = "坚果云", type = "webdav", address = "https://dav.example.com/dav",
+                     username = "u", password = "p",
+                     url = "我的同步/墨桥/Apps/Books/.Moon+/Cache" }
 
-    -- ① 云存储不可用 / 参数不对:一律安静返回 false(调用方据此退回手动输入)
-    eq("没有云存储 → false", WebDAV.pick_folder({ ui = {} }, function() end), false)
+    -- ① 参数 / 环境不对:一律安静返回 false(调用方据此退回手动输入)
+    eq("没给回调 → false", WebDAV.pick_folder({ ui = { cloudstorage = fake_cloud() } }, nil), false)
     eq("plugin 为空 → false", WebDAV.pick_folder(nil, function() end), false)
-    eq("没给回调 → false",
-       WebDAV.pick_folder({ ui = { cloudstorage = fake_manager({ SAVED }) } }, nil), false)
+    eq("没有云存储 → false", WebDAV.pick_folder({ ui = {} }, function() end), false)
+    eq("云存储里没有那个入口 → false",
+       WebDAV.pick_folder({ ui = { cloudstorage = {} } }, function() end), false)
 
-    -- ② 多台服务器:必须从**已保存的那一台**开始,而不是永远第一台
-    local m = fake_manager({
-        { name = "另一台", address = "https://other/dav", username = "x", url = "别的/起点" },
-        SAVED,
-    })
+    -- ② ★ 真机上那条路:交给 onShowCloudStorageList,并把**我们的回调**原样交出去
+    local cloud = fake_cloud()
     local got, calls = nil, 0
-    local handled = WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = m } },
-                                       function(c) got = c; calls = calls + 1 end)
-    eq("接管了", handled, true)
-    eq("先刷新过服务器列表", m.loaded, true)
-    eq("按已保存的那台初始化下标", m.server_idx, 2)
-    eq("打开的是**那台服务器**的起点目录", m.opened and m.opened.url, "我的同步/墨桥")
-    check("回调走字段、不走参数（异步时序下传参会丢）",
-          m.opened and m.opened.cb == nil
-          and type(m.caller_choose_folder_callback) == "function")
+    local cb = function(c) got = c; calls = calls + 1 end
+    eq("接管了", WebDAV.pick_folder({ ui = { cloudstorage = cloud } }, cb), true)
+    eq("只调了一次 KOReader 的入口", cloud.shown, 1)
+    eq("交出去的正是我们的回调", cloud.shown_cb, cb)
 
-    -- ③ 选中之后:原样转交,并**立刻清掉**自己
-    local chosen = { name = "坚果云", address = "https://dav.example.com/dav",
-                     username = "u", url = "我的同步/墨桥/Apps/Books/.Moon+/Cache" }
-    m.caller_choose_folder_callback(chosen)
-    eq("选中的那一层原样交出去了", got, chosen)
-    eq("用完立刻清掉（否则以后普通浏览长按目录会被当成给墨桥选目录）",
-       m.caller_choose_folder_callback, nil)
+    -- ③ 用户在浏览器里长按确认之后:选中的那一层原样转交给调用方
+    cloud.shown_cb(CHOSEN)
+    eq("选中结果交到调用方手里", got, CHOSEN)
     eq("只转交一次", calls, 1)
 
-    -- ④ 已保存的那台不在列表里(被删/改过名):退回第一台,但**仍然能用**
-    local m2 = fake_manager({ { name = "新名字", address = "https://new/dav", url = "起点" } })
-    eq("找不到同一台也接管", WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = m2 } },
-                                                function() end), true)
-    eq("  退回第一台", m2.server_idx, 1)
-    eq("  打开它的起点", m2.opened and m2.opened.url, "起点")
+    -- ④ 没有「墨桥同步目录」也要能用:选目录只依赖云存储功能,不依赖目标 ——
+    --    那种情况下 apply_dir_choice 会按"从服务器根算起"存绝对路径(见 moonsync_spec)。
+    local cloud2 = fake_cloud()
+    eq("没有目标也接管",
+       WebDAV.pick_folder({ server = nil, ui = { cloudstorage = cloud2 } }, function() end), true)
+    eq("  并且照样调了 KOReader 的入口", cloud2.shown, 1)
 
-    -- ⑤ 一台都没有:不接管(用户还需要那个列表去新建服务器)
-    eq("没有服务器 → false",
-       WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = fake_manager({}) } },
-                          function() end), false)
-
-    -- ⑥ 云浏览器内部抛异常:吃掉异常返回 false,不能变成新的故障点
-    local m3 = fake_manager({ SAVED })
-    m3.openCloudServer = function() error("boom") end
-    eq("openCloudServer 抛异常 → false",
-       WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = m3 } }, function() end), false)
-
-    -- ⑦ 只读:它不许改 plugin.server(改目标的是另一条路,不是这里)
-    local plugin = { server = SAVED, ui = { cloudstorage = fake_manager({ SAVED }) } }
+    -- ⑤ 只读:它不许改 plugin.server(改目标的是另一条路,不是这里)
+    local SAVED = { name = "坚果云", type = "webdav", address = "https://dav.example.com/dav",
+                    username = "u", password = "p", url = "我的同步/墨桥" }
+    local plugin = { server = SAVED, ui = { cloudstorage = fake_cloud() } }
     local before = plugin.server.url
     WebDAV.pick_folder(plugin, function() end)
     eq("不碰已保存的目标", plugin.server.url, before)
 
-    -- ⑧ ★ 用户**取消**时的残留回调必须被清掉
-    --
-    -- 云浏览器没有取消回调:直接返回的话,字段会留在 manager 上。它会让 KOReader
-    -- 自己把云盘菜单的"下载/上传"灰掉(cloudstorage.lua:483,592,601),
-    -- 而且用户以后从文件管理器浏览云盘、长按目录时会莫名弹"目录已保存"、**悄悄改掉设置**。
-    local m4 = fake_manager({ SAVED })
-    WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = m4 } }, function() end)
-    check("先确认回调确实挂上了", type(m4.caller_choose_folder_callback) == "function")
-    -- 模拟"用户取消后又从文件管理器打开了一次云浏览器"
-    m4:openCloudServer("起点")
-    eq("下一次打开时清掉残留回调", m4.caller_choose_folder_callback, nil)
-    eq("而且那次打开照常工作(守卫不拦路)", m4.opened and m4.opened.url, "起点")
-
-    -- 我们自己那一次不受影响:字段仍然活着(否则选目录根本收不到结果)
-    local m5 = fake_manager({ SAVED })
-    local got5
-    WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = m5 } },
-                       function(c) got5 = c end)
-    check("我们自己的那一次回调还在", type(m5.caller_choose_folder_callback) == "function")
-    m5.caller_choose_folder_callback({ address = SAVED.address, url = "x" })
-    eq("  仍然收得到结果", got5 and got5.url, "x")
-
-    -- ⑨ ★ 没有 WebDAV 目标:连浏览器都不打开
-    --
-    -- 选出来的路径是相对某台服务器算的,没有目标就无从判断"相对谁" ——
-    -- 放进来只会得到一个装得像模像样的错值(而错值不会报错,只会读不到进度)。
-    local m6 = fake_manager({ SAVED })
-    eq("没配目标 → 不接管", WebDAV.pick_folder({ ui = { cloudstorage = m6 } },
-                                             function() end), false)
-    eq("  也没有打开浏览器", m6.opened, nil)
-    eq("非 WebDAV 目标 → 同样不接管",
-       WebDAV.pick_folder({ server = { type = "dropbox" }, ui = { cloudstorage = m6 } },
-                          function() end), false)
+    -- ⑥ 老 API(ui.cloudstorage 就是 CloudStorage 的年代):仍然优先走那条捷径,
+    --    不会去调 onShowCloudStorageList —— 保留它是为了老版本,不能反过来变成新故障。
+    local legacy = {
+        servers = { { name = "坚果云", address = "https://dav.example.com/dav",
+                      username = "u", url = "我的同步/墨桥" } },
+        opened = nil,
+        shown = 0,
+        loadSettings = function() end,
+        openCloudServer = function(self, url) self.opened = url end,
+        onShowCloudStorageList = function(self) self.shown = self.shown + 1 end,
+    }
+    eq("老 API 上仍然接管",
+       WebDAV.pick_folder({ server = SAVED, ui = { cloudstorage = legacy } }, function() end), true)
+    eq("  走的是捷径(打开了那台服务器的起点)", legacy.opened, "我的同步/墨桥")
+    eq("  没有再去调通用入口", legacy.shown, 0)
 end
 
 -- ── 「远端有没有比我新」的判定(服务器时钟,没有跨设备时钟偏差) ──────────
