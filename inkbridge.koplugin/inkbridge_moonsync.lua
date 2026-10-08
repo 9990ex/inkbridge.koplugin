@@ -925,6 +925,147 @@ function Moonsync.pick_po(plugin, callback)
     end)
 end
 
+-- ── 点选同步目录 ───────────────────────────────────────────────────────────
+--
+-- 原来这里是个**输入框**,要用户手打 "Apps/Books/.Moon+/Cache" 这种路径。
+-- 墨水屏上打这种带大小写、点号、加号、斜杠的串又慢又容易错,而且错了**不报错** ——
+-- 表现只是"读不到进度",用户会以为是同步坏了。改成从服务器上点出来:
+-- 顺带还能看见目录到底存不存在,这本身就是最有用的信息。
+--
+-- 配额:每次只列**一层**、只读元数据(PROPFIND Depth 1),不消耗网盘下载额度。
+-- 分寸:点选只在**当前 WebDAV 目标内部**活动;"从服务器根算起的绝对路径"
+-- 仍然留给手动输入(那种路径在这个浏览器里没法表达,也不能假装能)。
+
+-- 目录路径的三个纯函数。单独拿出来是为了能直接测 —— 导航逻辑最容易出的错
+-- 就是少一级/多一级斜杠,而那种错在界面上看不出来,只是"读不到"。
+function Moonsync.dir_parent(path)
+    local p = tostring(path or ""):gsub("/+$", "")
+    if p == "" then return "" end
+    local parent = p:match("^(.*)/[^/]+$")
+    if parent == nil then return "" end          -- 顶层的 "A" → 根
+    return (parent:gsub("/+$", ""))
+end
+
+function Moonsync.dir_join(parent, name)
+    local p = tostring(parent or ""):gsub("/+$", "")
+    local n = tostring(name or ""):gsub("^/+", ""):gsub("/+$", "")
+    if n == "" then return p end
+    if p == "" then return n end
+    return p .. "/" .. n
+end
+
+function Moonsync.dir_label(path)
+    local p = tostring(path or ""):gsub("/+$", "")
+    if p == "" then return "（当前目标的根目录）" end
+    return p
+end
+
+-- 手动输入路径。**保留**它,不是怀旧:目录列表拿不到时(没网/权限/名字太怪),
+-- 或者就是要填"从服务器根算起"的绝对路径时,这是唯一的出路。
+function Moonsync._ask_dir(on_done)
+    local plat = Moonsync.get_platform()
+    local dialog
+    dialog = InputDialog:new{
+        title = (plat.short or plat.name) .. "同步目录",
+        description = "相对当前 WebDAV 目标，例如 " .. tostring(Moonsync.default_dir()) .. "\n"
+            .. "以 / 开头表示从服务器根算起。\n"
+            .. "当前：" .. Moonsync.get_dir(),
+        input = Moonsync.get_dir(),
+        buttons = {{
+            { text = "取消", callback = function() UIManager:close(dialog) end },
+            { text = "保存", is_enter_default = true, callback = function()
+                local dir = dialog:getInputText()
+                dir = dir and dir:gsub("^%s+", ""):gsub("%s+$", "") or ""
+                UIManager:close(dialog)
+                if dir == "" then
+                    show("墨桥：目录不能为空。")
+                    return
+                end
+                Moonsync.set_dir(dir)
+                show("墨桥：" .. (plat.short or plat.name) .. "同步目录已保存：\n" .. Moonsync.get_dir())
+                if type(on_done) == "function" then on_done() end
+            end },
+        }},
+    }
+    UIManager:show(dialog)
+    dialog:onShowKeyboard()
+end
+
+-- 点选同步目录。一行一个目录,点进去;「就选这个目录」保存当前浏览到的那一层。
+--
+-- 为什么从"当前目录本身"开始浏览,而不是从根开始:最常见的情况是"默认目录对不对"
+-- ——起点就是它,看一眼列表(有没有 Cache 这一层、旁边还有谁),不对再往上/往下走。
+function Moonsync.pick_dir(plugin, on_done)
+    local server = plugin and plugin.server
+    if type(server) ~= "table" or server.type ~= "webdav" then
+        show("墨桥：还没有设置 WebDAV 目标")
+        return
+    end
+    local plat = Moonsync.get_platform()
+    local cur = Moonsync.get_dir()
+    -- 绝对路径(目标之外)在本浏览器里表达不了,所以起点退回目标根:
+    -- 让它"看得见、但不许误确认" —— 见下面 browse == "" 那一支。
+    local absolute = cur:sub(1, 1) == "/"
+    local function save(dir)
+        Moonsync.set_dir(dir)
+        show("墨桥：" .. (plat.short or plat.name) .. "同步目录已保存：\n" .. Moonsync.get_dir())
+        if type(on_done) == "function" then on_done() end
+    end
+
+    local open
+    open = function(browse)
+        -- 交给 WebDAV 的路径必须与取文件时**同一套拼法**(Moon.build_folder),
+        -- 否则"点选的目录"和"实际去读的目录"会出现两级之差,而且不报错。
+        WebDAV.list_dirs(plugin, Moon.build_folder(server.url, browse), function(ok, dirs, err)
+            -- 列不出来**不是死路**:手动输入与恢复默认照给,只是没有目录行。
+            if not ok then dirs = {} end
+            local dialog
+            local buttons = {}
+            if browse ~= "" then
+                buttons[#buttons + 1] = {{ text = "✅ 就选这个目录：" .. browse,
+                    callback = function() UIManager:close(dialog); save(browse) end }}
+            else
+                -- 空路径没法被 set_dir 表达(normalize_dir 会把它换成默认目录),
+                -- 所以根目录这一层**不给**"就选这个目录",免得确认了一个假的选项。
+                buttons[#buttons + 1] = {{ text = "（这里是目标的根目录，请往下选一层）",
+                    callback = function() end }}
+            end
+            for _, d in ipairs(dirs) do
+                buttons[#buttons + 1] = {{ text = "📁 " .. d.name,
+                    callback = function()
+                        UIManager:close(dialog)
+                        open(Moonsync.dir_join(browse, d.name))
+                    end }}
+            end
+            if browse ~= "" then
+                buttons[#buttons + 1] = {{ text = "⬆️ 上一层（" .. Moonsync.dir_label(Moonsync.dir_parent(browse)) .. "）",
+                    callback = function() UIManager:close(dialog); open(Moonsync.dir_parent(browse)) end }}
+            end
+            buttons[#buttons + 1] = {{ text = "✏️ 手动输入路径…",
+                callback = function() UIManager:close(dialog); Moonsync._ask_dir(on_done) end }}
+            buttons[#buttons + 1] = {{ text = "↩️ 恢复默认：" .. Moonsync.default_dir(),
+                callback = function() UIManager:close(dialog); save(Moonsync.default_dir()) end }}
+            buttons[#buttons + 1] = {{ text = "取消",
+                callback = function() UIManager:close(dialog) end }}
+
+            dialog = ButtonDialog:new{
+                title = "选择" .. (plat.short or plat.name) .. "同步目录"
+                    .. "\n当前：" .. cur
+                    .. (absolute and "\n（当前是目标之外的绝对路径，本页只能手动输入）" or ""),
+                buttons = buttons,
+            }
+            UIManager:show(dialog)
+            -- 失败提示放在弹框**之后**:放在前面会被紧接着的模态框盖住,用户看不到
+            -- (pick_po 的"目录里没有 .po"也是同样的顺序,理由一样)。
+            if not ok then
+                show("墨桥：读取目录失败（" .. tostring(err) .. "）\n"
+                    .. "可以手动输入路径，或恢复默认。")
+            end
+        end)
+    end
+    open(absolute and "" or cur)
+end
+
 -- 用**指定文件名**导入(手动选文件走这条)。
 function Moonsync.import_named(plugin, filename, opts)
     if type(filename) ~= "string" or filename == "" then return end

@@ -792,6 +792,69 @@ do
     G_reader_settings.saveSetting = real_save
 end
 
+-- ── 只列子目录(给"点选同步目录"用) ────────────────────────────────────────
+-- 这一条与上面的 list_folder 共用同一层实现,但**过滤方向相反**:点选目录靠它,
+-- 少一个目录行 = 用户看不见那一层、以为目录不存在;多一个 = 点进去是空的。
+print("== list_dirs（只列子目录，给点选用）==")
+do
+    local function call(plugin, folder)
+        return invoke(function(cb) WebDAV.list_dirs(plugin, folder, cb) end)
+    end
+
+    -- ① 目标不是 WebDAV / provider 缺失:与 list_folder 同样的两道门
+    local r = call({ server = { type = "dropbox" }, ui = {} }, "/x")
+    eq("非 WebDAV 目标 → 失败", r[1], false)
+    r = call({ server = new_server(), ui = { cloudstorage = { providers = {} } } }, "/x")
+    eq("provider 缺失 → 失败", r[1], false)
+
+    -- ② 正常:只留目录项;名字去掉 provider 加的尾斜杠;按名字排序(忽略大小写)
+    local plugin, provider, calls = make_env{ listing = {
+        { is_file = true,   text = "死人经.epub.po" },
+        { is_folder = true, text = "Cache/" },
+        { is_folder = true, text = "Bookmark/" },
+        { is_folder = true, text = "books/" },
+        { is_file = false,  text = "没有 is_folder 的捣乱项" },
+        { is_folder = true, text = "/" },            -- 名字空掉:不能变成一个空行
+    } }
+    r = call(plugin, "/books/Apps/Books/.Moon+")
+    eq("正常列目录 → 成功", r[1], true)
+    eq("  只留目录项(文件不进列表)", #r[2], 3)
+    eq("  按名字排序,忽略大小写", r[2] and r[2][1] and r[2][1].name, "Bookmark")
+    eq("  第二项", r[2] and r[2][2] and r[2][2].name, "books")
+    eq("  第三项", r[2] and r[2][3] and r[2][3].name, "Cache")
+    check("  名字里的尾斜杠必须去掉",
+          not tostring(r[2][1].name):find("/", 1, true), r[2][1].name)
+    eq("  路径原样透传", calls.list_url, "/books/Apps/Books/.Moon+")
+    eq("  要目录项(过滤留给调用方)", calls.list_include_folders, true)
+    eq("  调用后 base 还原", provider.base, nil)
+
+    -- ③ 与 list_folder 相同的三条底线:返回 nil 不算空、抛异常不炸、空目录是成功
+    local p3 = make_env{ listing = nil }
+    r = call(p3, "/x")
+    eq("listFolder 返回 nil → 失败", r[1], false)
+    eq("  不给空列表", r[2], nil)
+
+    local p4 = make_env{}
+    p4.ui.cloudstorage.providers.webdav.listFolder = function() error("boom") end
+    r = call(p4, "/x")
+    eq("抛异常 → 失败(不抛出)", r[1], false)
+    check("  带上原始原因",
+          type(r[3]) == "string" and r[3]:find("boom", 1, true) ~= nil, r[3])
+    eq("  异常时也要还原 base", p4.ui.cloudstorage.providers.webdav.base, nil)
+
+    local p5 = make_env{ listing = {} }
+    r = call(p5, "/x")
+    eq("空目录 → 成功", r[1], true)
+    eq("  给出空列表", type(r[2]) == "table" and #r[2] or -1, 0)
+    eq("  没有错误", r[3], nil)
+
+    -- ④ show_unsupported 的临时开关由共用的那一层负责:这里只验"用完放回"
+    G_reader_settings.data.show_unsupported = false
+    call(make_env{ listing = {} }, "/x")
+    eq("列目录后 show_unsupported 放回原值", G_reader_settings.data.show_unsupported, false)
+    G_reader_settings.data.show_unsupported = nil
+end
+
 -- ── 删除云端文件(只给"清理过期记录"用) ────────────────────────────────────
 -- 删除是**不可逆**的,所以这个函数的每一条拒绝路径都要有测试:
 -- 宁可删不掉,也绝不能删错。

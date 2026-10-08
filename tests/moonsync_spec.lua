@@ -33,6 +33,10 @@ local last_request = nil
 local http_reply = nil          -- 每个用例可换：function(req) -> 与 socket.http.request 同返回值
 local list_folder_reply = nil   -- 每个用例可换：peek_po 取服务器时间时走的目录列表
 local list_folder_calls = {}
+-- 点选同步目录走 list_dirs:按**请求路径**编排回复,正好用来钉住
+-- "墨桥算出来的路径"与"实际发出去的路径"一致。
+local list_dirs_reply = nil
+local list_dirs_calls = {}
 local settings = {}
 
 _G.G_reader_settings = {
@@ -86,6 +90,16 @@ package.preload["inkbridge_webdav"] = function()
         if type(reply) == "function" then reply(cb); return end
         if type(reply) ~= "table" then cb(false, nil, "stub: 未编排"); return end
         cb(reply.ok, reply.items, reply.err)
+    end,
+    -- 只列子目录(真实现同样只读元数据)。按路径编排:没编排的路径一律当成失败,
+    -- 这样"多拼了一级目录"会立刻暴露,而不是静悄悄拿到空列表。
+    list_dirs = function(_, folder, cb)
+        list_dirs_calls[#list_dirs_calls + 1] = folder
+        local reply = list_dirs_reply
+        if type(reply) == "function" then reply(folder, cb); return end
+        local entry = type(reply) == "table" and reply[folder] or nil
+        if not entry then cb(false, nil, "stub: 没编排 " .. tostring(folder)); return end
+        cb(entry.ok ~= false, entry.dirs, entry.err)
     end }
 end
 
@@ -866,6 +880,163 @@ do
     last_request = nil
     MS.import_named(plugin_v, "x.epub.po")
     eq("取进度文件只用 GET", last_request and last_request.method, "GET")
+end
+
+print("== 点选同步目录（原来是个输入框）==")
+do
+    -- 纯函数:导航最容易错的就是少一级/多一级斜杠 —— 那种错在界面上看不出来,
+    -- 表现只是"读不到进度",所以这几条必须先钉死。
+    eq("父目录", MS.dir_parent("A/B/C"), "A/B")
+    eq("顶层 → 根", MS.dir_parent("A"), "")
+    eq("根 → 根", MS.dir_parent(""), "")
+    eq("末尾斜杠不影响", MS.dir_parent("A/B/"), "A")
+    eq("拼接", MS.dir_join("A", "B"), "A/B")
+    eq("根下拼接不留前导斜杠", MS.dir_join("", "A"), "A")
+    eq("子名自带斜杠也吃掉", MS.dir_join("A", "B/"), "A/B")
+    eq("父为空+子为空", MS.dir_join("", ""), "")
+    eq("根目录的显示名", MS.dir_label(""), "（当前目标的根目录）")
+    eq("普通显示名", MS.dir_label("A/B/"), "A/B")
+
+    local SERVER3 = { type = "webdav", address = "https://dav.example.com/dav",
+                      url = "我的同步/墨桥", username = "u", password = "p" }
+    local P = { server = SERVER3, ui = {} }
+    -- 找一行按钮:按前缀匹配(行文本里含路径,前缀足够区分)
+    local function row(dlg, prefix)
+        for _, group in ipairs(dlg and dlg.buttons or {}) do
+            for _, b in ipairs(group) do
+                if type(b.text) == "string" and b.text:sub(1, #prefix) == prefix then return b end
+            end
+        end
+        return nil
+    end
+
+    MS.set_platform("moon")                       -- 目录同时被重置成默认值
+    settings["inkbridge_moon_dir"] = nil
+
+    -- ① 起点 = 当前目录本身(而不是从服务器根开始),点进去一层再确认
+    list_dirs_calls = {}
+    list_dirs_reply = {
+        ["/我的同步/墨桥/Apps/Books/.Moon+/Cache"]      = { ok = true, dirs = { { name = "2026" } } },
+        ["/我的同步/墨桥/Apps/Books/.Moon+/Cache/2026"] = { ok = true, dirs = {} },
+    }
+    last_buttondialog = nil
+    MS.pick_dir(P)
+    local d = last_buttondialog
+    check("弹出了对话框", type(d) == "table" and type(d.buttons) == "table")
+    eq("先列**当前目录本身**(不是从根开始)", list_dirs_calls[1],
+       "/我的同步/墨桥/Apps/Books/.Moon+/Cache")
+    check("有『就选这个目录』,并写明是哪一层",
+          row(d, "✅") ~= nil and row(d, "✅").text:find("Apps/Books/.Moon+/Cache", 1, true) ~= nil,
+          row(d, "✅") and row(d, "✅").text)
+    check("有子目录行", row(d, "📁 2026") ~= nil)
+    check("永远留着手动输入这条出路", row(d, "✏️") ~= nil)
+    check("也有恢复默认", row(d, "↩️") ~= nil)
+    check("还有取消", row(d, "取消") ~= nil)
+
+    row(d, "📁 2026").callback()
+    eq("点进子目录:请求路径 = 目标 + 相对路径", list_dirs_calls[2],
+       "/我的同步/墨桥/Apps/Books/.Moon+/Cache/2026")
+    d = last_buttondialog
+    check("里层没有再下一级", row(d, "📁") == nil)
+    row(d, "✅").callback()
+    eq("确认后保存的是**点进去的那一层**", settings["inkbridge_moon_dir"],
+       "Apps/Books/.Moon+/Cache/2026")
+
+    -- ② 上一层:写明会去哪,点了就列父目录
+    list_dirs_calls = {}
+    list_dirs_reply = {
+        ["/我的同步/墨桥/Apps/Books/.Moon+/Cache/2026"] = { ok = true, dirs = {} },
+        ["/我的同步/墨桥/Apps/Books/.Moon+/Cache"]      = { ok = true, dirs = { { name = "2026" } } },
+    }
+    MS.pick_dir(P)
+    d = last_buttondialog
+    local up = row(d, "⬆️")
+    check("有『上一层』", up ~= nil)
+    check("  且写明上一层是哪个目录",
+          up and up.text:find("Apps/Books/.Moon+/Cache", 1, true) ~= nil, up and up.text)
+    up.callback()
+    eq("上一层:列的是父目录", list_dirs_calls[2],
+       "/我的同步/墨桥/Apps/Books/.Moon+/Cache")
+    check("回到父层后又能往下点", row(last_buttondialog, "📁 2026") ~= nil)
+
+    -- ③ 一路退到目标的根目录:不许给一个假的"就选这个目录"
+    --    空路径会被 set_dir/normalize_dir 换成**默认目录**,确认了就是骗人。
+    settings["inkbridge_moon_dir"] = "Apps"
+    list_dirs_reply = {
+        ["/我的同步/墨桥/Apps"] = { ok = true, dirs = {} },
+        ["/我的同步/墨桥"]      = { ok = true, dirs = { { name = "Apps" } } },
+    }
+    MS.pick_dir(P)
+    row(last_buttondialog, "⬆️").callback()
+    d = last_buttondialog
+    check("到根目录后不再给『就选这个目录』", row(d, "✅") == nil)
+    check("  而是明确说这里是根", row(d, "（这里是") ~= nil)
+    check("根目录也不给『上一层』", row(d, "⬆️") == nil)
+    check("但仍能往下选", row(d, "📁 Apps") ~= nil)
+
+    -- ④ 列目录失败不是死路:手动输入与恢复默认照给
+    settings["inkbridge_moon_dir"] = "Apps"
+    list_dirs_reply = {}                          -- 桩:没编排 → 失败
+    shown = {}
+    MS.pick_dir(P)
+    d = last_buttondialog
+    check("列目录失败仍弹出对话框", type(d) == "table")
+    check("  如实说明失败原因",
+          #shown > 0 and type(shown[#shown].text) == "string"
+          and shown[#shown].text:find("读取目录失败", 1, true) ~= nil,
+          #shown > 0 and shown[#shown].text or "没有弹任何东西")
+    check("  仍然有手动输入", row(d, "✏️") ~= nil)
+    check("  仍然有恢复默认", row(d, "↩️") ~= nil)
+    check("  也仍然能就选当前这一层(不因一次失败丢掉已选目录)", row(d, "✅") ~= nil)
+
+    -- ⑤ 当前是"目标之外的绝对路径":起点退回目标根,且不许误确认
+    settings["inkbridge_moon_dir"] = "/别的目录/xx"
+    list_dirs_calls = {}
+    list_dirs_reply = { ["/我的同步/墨桥"] = { ok = true, dirs = { { name = "Apps" } } } }
+    MS.pick_dir(P)
+    d = last_buttondialog
+    eq("绝对路径:起点退回目标根", list_dirs_calls[1], "/我的同步/墨桥")
+    check("不给『就选这个目录』(否则绝对路径会被悄悄换成默认目录)", row(d, "✅") == nil)
+    check("标题里说明只能手动输入",
+          type(d.title) == "string" and d.title:find("绝对路径", 1, true) ~= nil, d.title)
+
+    -- ⑥ 恢复默认:点一下就把默认目录写回去
+    row(d, "↩️").callback()
+    eq("恢复默认写的正是默认目录", settings["inkbridge_moon_dir"], "Apps/Books/.Moon+/Cache")
+
+    -- ⑦ 手动输入(绝对路径 / 列表拿不到时的唯一出路):预填当前值,保存时去空白
+    settings["inkbridge_moon_dir"] = "Apps"
+    list_dirs_reply = { ["/我的同步/墨桥/Apps"] = { ok = true, dirs = {} } }
+    MS.pick_dir(P)
+    row(last_buttondialog, "✏️").callback()
+    check("手动输入:弹的是输入框", last_inputdialog ~= nil)
+    eq("  预填当前值", last_inputdialog and last_inputdialog.input, "Apps")
+    last_inputdialog._typing = "  别的/目录/  "
+    last_inputdialog.buttons[1][2].callback()
+    eq("  保存时去掉首尾空白", settings["inkbridge_moon_dir"], "别的/目录")
+
+    -- 空输入:不许把目录清成"空"(空会被当成默认目录,等于偷偷改设置)
+    last_inputdialog._typing = "   "
+    shown = {}
+    last_inputdialog.buttons[1][2].callback()
+    eq("  空输入不写设置", settings["inkbridge_moon_dir"], "别的/目录")
+    check("  并说明原因",
+          #shown > 0 and type(shown[#shown].text) == "string"
+          and shown[#shown].text:find("不能为空", 1, true) ~= nil,
+          #shown > 0 and shown[#shown].text or "没有弹任何东西")
+
+    -- ⑧ 没有 WebDAV 目标时:说清楚,而不是弹一个列表
+    last_buttondialog = nil
+    shown = {}
+    MS.pick_dir({ server = { type = "dropbox" }, ui = {} })
+    eq("没有 WebDAV 目标就不弹目录框", last_buttondialog, nil)
+    check("并说明原因",
+          #shown > 0 and type(shown[#shown].text) == "string"
+          and shown[#shown].text:find("WebDAV", 1, true) ~= nil,
+          #shown > 0 and shown[#shown].text or "没有弹任何东西")
+
+    settings["inkbridge_moon_dir"] = nil
+    MS.set_platform("moon")
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

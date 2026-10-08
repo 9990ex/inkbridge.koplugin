@@ -201,38 +201,15 @@ function InkBridge:set_device_label()
     dialog:onShowKeyboard()
 end
 
--- 让用户手动指定静读天下的云同步目录。
--- 刻意不做自动探测:目录猜错会读到别的书的进度,而用户几乎不可能察觉。
--- 可以填相对路径(相对当前 WebDAV 目标),也可以填以 "/" 开头的绝对路径
--- (从 WebDAV 服务器根算起 —— 当静读天下的目录不在当前目标之下时用这种)。
+-- 让用户指定静读天下的云同步目录。
+--
+-- 默认走**点选**(Moonsync.pick_dir):墨水屏上手打 "Apps/Books/.Moon+/Cache"
+-- 这种路径又慢又容易错,而且错了**不报错** —— 表现只是"读不到进度"。
+-- 点选顺带能看见目录到底存不存在;要填目标之外的绝对路径仍可"手动输入"。
+--
+-- 仍然刻意**不做自动探测**:目录猜错会读到别的书的进度,而用户几乎不可能察觉。
 function InkBridge:set_moon_dir()
-    local plat = Moonsync.get_platform()
-    local dialog
-    dialog = InputDialog:new{
-        title = (plat.short or plat.name) .. "同步目录",
-        description = plat.name .. "云同步存放进度文件的目录。\n"
-            .. "相对当前 WebDAV 目标,例如 " .. tostring(plat.dir or "Apps/Books/…") .. "\n"
-            .. "以 / 开头表示从服务器根算起。\n"
-            .. "当前:" .. Moonsync.get_dir(),
-        input = Moonsync.get_dir(),
-        buttons = {{
-            { text = "取消", callback = function() UIManager:close(dialog) end },
-            { text = "保存", is_enter_default = true, callback = function()
-                local dir = dialog:getInputText()
-                dir = dir and dir:gsub("^%s+", ""):gsub("%s+$", "") or ""
-                if dir ~= "" then
-                    Moonsync.set_dir(dir)
-                    UIManager:close(dialog)
-                    show("墨桥：静读天下同步目录已保存。")
-                else
-                    UIManager:close(dialog)
-                    show("墨桥：目录不能为空。")
-                end
-            end },
-        }},
-    }
-    UIManager:show(dialog)
-    dialog:onShowKeyboard()
+    Moonsync.pick_dir(self)
 end
 
 -- 只读下载用的本地临时文件。
@@ -520,7 +497,7 @@ function InkBridge:_webdav_menu()
           sub_item_table_func = function() return self:_platform_menu() end },
         { text = (plat.short or plat.name) .. "同步目录",
           help_text = usable
-              and "相对上面那个目录；以 / 开头表示从服务器根算起"
+              and "从服务器上点选（只列目录，不耗下载额度）；也可手动输入绝对路径"
               or Moonsync.platform_reason(plat, false),
           enabled_func = function() return usable end,
           callback = function() self:set_moon_dir() end },

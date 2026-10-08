@@ -33,7 +33,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 当前状态
 
-**已有可用的 0.3.2-alpha**，可在 [Releases](../../releases) 下载安装包。
+**已有可用的 0.3.3-alpha**，可在 [Releases](../../releases) 下载安装包。
 0.3.0 是正式版基线；之后的小改动继续走 **`0.3.x-alpha`**（0.3.1-alpha、0.3.2-alpha…），
 不跳大版本号。
 上传、下载、跨设备跳转的完整流程已在 Android 与 Kindle 设备上实测通过，

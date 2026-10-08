@@ -481,7 +481,7 @@ function WebDAV.delete_file(plugin, url, callback)
     if not dispatched then finish(false, tostring(err)) end
 end
 
--- 列出一个**任意目录**(只读元数据,不下载内容),把文件项交给回调。
+-- 列出一个**任意目录**(只读元数据,不下载内容),把原始条目交给下面的两个包装函数。
 --
 -- 为什么需要它:静读天下的 .po 不在当前 server.url 的历史记录里,要单独列它那个目录,
 -- 才能拿到**服务器时间**(列表项自带的 modification,Unix 秒)—— 这正是 KO 记录
@@ -489,7 +489,11 @@ end
 -- 已经验证可用的路。列表只读元数据,**不消耗网盘的下载额度**。
 --
 -- folder_path 以 "/" 开头表示从服务器根算起,否则相对 server.url。
-function WebDAV.list_folder(plugin, folder_path, callback)
+--
+-- 这一层是 list_folder / list_dirs **共用**的:provider.base 的副本与还原、
+-- show_unsupported 的临时开关、"listFolder 返回 nil 不等于空目录"这三件事
+-- 必须有且只有一处实现 —— 抄一遍就等于埋一个"只改了其中一份"的坑。
+local function list_raw(plugin, folder_path, callback)
     local server = plugin and plugin.server
     if type(server) ~= "table" or server.type ~= "webdav" then
         callback(false, nil, "WebDAV destination is not configured")
@@ -545,16 +549,52 @@ function WebDAV.list_folder(plugin, folder_path, callback)
         if not ok then finish(false, nil, tostring(result)); return end
         -- listFolder 在网络/认证/HTTP 出错时可能返回 nil，不能等同于空目录
         if type(result) ~= "table" then finish(false, nil, "WebDAV list failed"); return end
-        local out = {}
-        for _, item in ipairs(result) do
-            if item.is_file then out[#out + 1] = item end
-        end
-        finish(true, out, nil)
+        finish(true, result, nil)
     end
     local dispatched, err = pcall(provider.run, request)
 
     if settings_table then settings_table.show_unsupported = had_unsupported end
     if not dispatched then finish(false, nil, tostring(err)) end
+end
+
+-- 只列**文件**。调用方(找 `.po`)拿它当文件名用,混进目录会让判断多一堆 if。
+function WebDAV.list_folder(plugin, folder_path, callback)
+    list_raw(plugin, folder_path, function(ok, items, err)
+        if not ok then callback(false, nil, err); return end
+        local out = {}
+        for _, item in ipairs(items) do
+            if item.is_file then out[#out + 1] = item end
+        end
+        callback(true, out, nil)
+    end)
+end
+
+-- 只列**子目录**,给"点选目录"用:想点选,就得先看得见目录。
+--
+-- 回调 (ok, dirs, err):dirs = { { name = "Cache" }, … },按名字排序(忽略大小写)。
+-- 目录名在 provider 那边带着尾斜杠(text = name .. "/"),这里去掉再交出去:
+-- 显示时不该带斜杠,拼接路径由调用方负责。
+--
+-- 只认 provider **明确标了 `is_folder`** 的项:没有这个标记的条目(某些服务器会
+-- 返回一些怪条目)宁可不当目录 —— 把一个文件当目录点进去,只会得到一个空列表,
+-- 而用户会以为"目录选错了"。
+function WebDAV.list_dirs(plugin, folder_path, callback)
+    list_raw(plugin, folder_path, function(ok, items, err)
+        if not ok then callback(false, nil, err); return end
+        local out = {}
+        for _, item in ipairs(items) do
+            if item.is_folder then
+                local name = tostring(item.text or ""):gsub("/+$", "")
+                if name ~= "" then out[#out + 1] = { name = name } end
+            end
+        end
+        table.sort(out, function(a, b)
+            local la, lb = a.name:lower(), b.name:lower()
+            if la == lb then return a.name < b.name end
+            return la < lb
+        end)
+        callback(true, out, nil)
+    end)
 end
 
 -- 显示可读的历史记录列表。只显示最近三条，具体跳转仍由用户确认。

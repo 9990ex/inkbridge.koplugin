@@ -206,7 +206,13 @@ function Moon.build_folder(root, dir)
         local base = tostring(root or ""):gsub("^/+", ""):gsub("/+$", "")
         folder = "/" .. (base == "" and folder or (base .. "/" .. folder))
     end
-    return (folder:gsub("//+", "/"))
+    folder = (folder:gsub("//+", "/"))
+    -- dir 为空(= "就用 WebDAV 目标本身")原本会拼出 "/base/" 这种尾斜杠:
+    -- 对 PROPFIND 无害,但会让"列目录的路径"与"取文件的 URL"长得不一样,
+    -- 而点选目录正是拿这个字符串当"现在在哪一层"的身份用(要比对、要回调)。
+    -- 统一成不带尾斜杠;只有根目录本身保留 "/"。
+    if #folder > 1 then folder = (folder:gsub("/+$", "")) end
+    return folder
 end
 
 function Moon.build_url(address, root, dir, filename)

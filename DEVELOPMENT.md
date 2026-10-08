@@ -25,9 +25,9 @@ KOReader 插件 InkBridge(墨桥)的开发文档。功能:通过 KOReader 自带
 
 | 测试文件 | 覆盖内容 |
 |---|---|
-| `tests/moon_spec.lua` | `.po` 进度格式的解析与生成（spine 索引、章内字符偏移、百分比回退、越界与畸形输入） |
-| `tests/moonsync_spec.lua` | 静读天下互通：下载列表、写回四关口（换算/自检/备份/回读校验）、兼容平台状态与文案、手动选文件、`peek_po` |
-| `tests/webdav_spec.lua` | 云存储层：远端路径校验、只读下载（404、非法路径、临时文件清理）、历史记录筛选与排序、上传两条路径与 `provider.base` 副本/恢复、列目录与 `show_unsupported` 还原、删除守卫、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
+| `tests/moon_spec.lua` | `.po` 进度格式的解析与生成（spine 索引、章内字符偏移、百分比回退、越界与畸形输入）、URL/目录拼接 |
+| `tests/moonsync_spec.lua` | 静读天下互通：下载列表、写回四关口（换算/自检/备份/回读校验）、兼容平台状态与文案、手动选文件、**点选同步目录**、`peek_po` |
+| `tests/webdav_spec.lua` | 云存储层：远端路径校验、只读下载（404、非法路径、临时文件清理）、历史记录筛选与排序、上传两条路径与 `provider.base` 副本/恢复、列目录与**列子目录**、`show_unsupported` 还原、删除守卫、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
 | `tests/main_spec.lua` | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII**、**云端历史保留策略**、**设备名探测与截断** |
 | `tests/state_spec.lua` | 文本锚点规范化（UTF-8 按字符计数、**xpointer 字符偏移**）、阅读位置采集、记录校验与向后兼容、紧凑载荷的结构与体积 |
 | `tests/update_spec.lua` | 版本号比较与 release 页面解析 |

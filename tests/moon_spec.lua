@@ -165,6 +165,11 @@ do
     eq("地址尾部斜杠容错",
        Moon.build_url("https://dav.example.com/dav/", "", "Apps", "x.po"),
        "https://dav.example.com/dav/Apps/x.po")
+    -- 目录拼接(点选同步目录就是靠这个字符串判断"现在在哪一层")
+    eq("目录为空 = WebDAV 目标本身,且不带尾斜杠",
+       Moon.build_folder("/1/BOOK/inkbridge/test", ""), "/1/BOOK/inkbridge/test")
+    eq("服务器根目录仍然是 /", Moon.build_folder("/", ""), "/")
+    eq("目标为空时不留前导双斜杠", Moon.build_folder("", "Apps"), "/Apps")
     eq("中文按 UTF-8 字节转义",
        Moon.build_url("https://d/", "", "Apps", "死人经.epub.po"),
        "https://d/Apps/%E6%AD%BB%E4%BA%BA%E7%BB%8F.epub.po")
