@@ -188,7 +188,28 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
       行高照抄 KOReader 自己的 `font_size × 1.1 × line_spacing%`，见 `readerrolling.lua:902`），
       在确认框与自动跳转提示里如实写出，不假装对齐；
     - 算不出行号时（缺接口/缺字体设置）就报 nil，不编数字，也不声称「对齐」或「不对齐」。
-    → 测试从 199 条加到 240 条（`tests/webdav_spec.lua` 第 5b 节），全库 865 条。
+    → 测试从 199 条加到 256 条（`tests/webdav_spec.lua` 第 5b 节），全库 888 条。
+
+15. **2026-10-08 按用户三个优先级自查，修掉四个 bug（0.3.6）。**
+    - **`list_folder` 的 `show_unsupported` 还原时机错**（静读天下目录/时间戳共用这条路）：
+      未联网时 provider 的 `run()` 会把回调推迟到联网之后
+      （`NetworkMgr:willRerunWhenConnected` 返回 true 就立即返回），原来的代码在 `run`
+      返回后立刻还原开关 —— 推迟执行时 listFolder 真正跑起来，`.po` 又被按扩展名过滤掉，
+      表现为「目录里没有 .po 文件」。→ 还原移进 `finish`（回调真正执行后），并留档
+      「用户取消联网提示 → 开关残留 true」的取舍（只影响 KOReader 自己的文件浏览，
+      内存态、不写设置）。测试补了推迟执行用例。
+    - **滚动模式下误报「首行对不齐」**：滚动模式 `GotoXPointer` 走 `_gotoPos` 把目标行
+      放到视野顶部，首行天然对齐；落点核算（`_landing_info`）却会按「落点页第几行」
+      算出 >1 并误报。→ `_plan_jump` 在 `ui.view.view_mode == "scroll"` 时跳过核算。
+    - **静读天下导入的多命中消歧会选错章**：`.po` 的 `:%`（静读天下显示的整书百分比）
+      与 `_plan_jump` 的比例消歧（`pos_percent × doc_height`，像素域）是两把尺；
+      20 字锚点重复命中且比例又偏时可能跳到**别的章**。→ `import_from_moon` 传
+      `fragment = star + 1`（star 0 基 = DocFragment 序号 − 1，项目已真机验证），
+      搜索命中先只在**本章内**做比例消歧，章内没有命中再退回全体（不制造新失败）。
+    - **自动跳转提示漏报**：`first_line_same == false` 但算不出行号（缺字体设置）时，
+      自动跳转的提示会静默退回「已跳转到云端位置」。→ 补一句「首行对不齐」。
+    → 测试 865 → 888（moonsync 258 → 265：新增「import_from_moon 交给 confirm_jump
+      的记录」；webdav 240 → 256：滚动模式跳过核算、章内优先、推迟执行、漏报文案）。
 
 ## 已知精度上限:分页模式是「页级」定位(特性,非 bug —— 记录在案,暂不修)
 

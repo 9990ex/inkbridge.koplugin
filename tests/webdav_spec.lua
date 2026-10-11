@@ -667,6 +667,76 @@ do
     package.preload["device"] = nil
 end
 
+do
+    -- 滚动模式:GotoXPointer 走 _gotoPos 把目标行放到视野顶部,首行天然对齐,
+    -- 此时绝不能按「落点页」核算并误报「首行对不齐」(滚动模式没有页这回事)
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-3" },
+        positions = { [XP_OK] = 90022, ["page-top-3"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local ui = plan_ui(doc)
+    ui.view = { view_mode = "scroll" }
+    local plan = WebDAV._plan_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("滚动模式仍用 xpointer", plan and plan.method, "xpointer")
+    eq("滚动模式不算落点页", plan and plan.page, nil)
+    eq("不声称对齐/不对齐", plan and plan.first_line_same, nil)
+    eq("不带行号", plan and plan.line_number, nil)
+
+    ui.handleEvent = function() end
+    _last_confirm = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR, percent = 0.25 })
+    check("滚动模式确认框不误报「首行对不齐」",
+        _last_confirm and (_last_confirm.text or ""):find("首行对不齐", 1, true) == nil,
+        _last_confirm and _last_confirm.text)
+end
+
+do
+    -- 静读天下记录带章节(star + 1 = DocFragment 序号):锚点文字重复命中时,
+    -- **只在那一章**的命中里做比例消歧 —— 比例是软判据,章是硬边界。
+    -- 这里"比例最近"的命中在 3 章,真正的在 5 章,必须选 5 章那个。
+    local doc = plan_doc({
+        xpointer_ok = false,
+        hits = {
+            { start = "/body/DocFragment[3]/body/div/p[1]/text().0", ["end"] = "e1" },
+            { start = "/body/DocFragment[5]/body/div/p[9]/text().7", ["end"] = "e2" },
+        },
+        positions = {
+            ["/body/DocFragment[3]/body/div/p[1]/text().0"] = 10000,
+            ["/body/DocFragment[5]/body/div/p[9]/text().7"] = 90000,
+        },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.1, fragment = 5,
+    })
+    eq("重复命中按章节收窄", plan and plan.xpointer,
+        "/body/DocFragment[5]/body/div/p[9]/text().7")
+    eq("仍是文本锚点方案", plan and plan.method, "text")
+end
+
+do
+    -- 期望章节里没有命中:退回全体按比例挑 —— 过滤只改进挑选,不制造新的失败
+    local doc = plan_doc({
+        xpointer_ok = false,
+        hits = {
+            { start = "/body/DocFragment[3]/body/div/p[1]/text().0", ["end"] = "e1" },
+            { start = "/body/DocFragment[4]/body/div/p[9]/text().7", ["end"] = "e2" },
+        },
+        positions = {
+            ["/body/DocFragment[3]/body/div/p[1]/text().0"] = 10000,
+            ["/body/DocFragment[4]/body/div/p[9]/text().7"] = 90000,
+        },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.1, fragment = 7,
+    })
+    eq("章内没有命中时退回全体按比例挑", plan and plan.xpointer,
+        "/body/DocFragment[3]/body/div/p[1]/text().0")
+end
+
 -- ── 确认框文案：对齐时不加行；对不齐必须说清楚 ─────────────────────────────
 do
     local function jump_ui(doc)
@@ -735,6 +805,25 @@ do
     eq("自动跳转不再弹确认框", _last_confirm, nil)
     check("自动跳转也说明差几行",
         type(_last_message) == "string" and _last_message:find("本页第 3 行", 1, true) ~= nil,
+        tostring(_last_message))
+end
+
+do
+    -- 对不齐但算不出行号(缺字体设置)时,自动跳转也必须说一句,不能静默退回
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-x" },
+        compare = function(_, a, b) return a == b and 0 or -1 end,
+    })
+    local ui = plan_ui(doc)
+    ui.handleEvent = function() end
+    _last_message = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR, percent = 0.25 },
+        { already_confirmed = true })
+    check("算不出行号时自动跳转仍说明首行对不齐",
+        type(_last_message) == "string" and _last_message:find("首行对不齐", 1, true) ~= nil,
         tostring(_last_message))
 end
 
@@ -1150,6 +1239,34 @@ do
     call(make_env{ listing = {} }, "/x")
     eq("绝不把 show_unsupported 写进设置文件", saves, 0)
     G_reader_settings.saveSetting = real_save
+
+    -- ⑪ 未联网时 provider.run 会**推迟回调**(NetworkMgr:willRerunWhenConnected
+    --    返回 true 就立即 return、等联网再跑),开关必须一直开到回调真正执行 ——
+    --    2026-10-08 自查抓到的时序 bug:原来在 run 返回后立刻还原,推迟执行时
+    --    listFolder 真正跑起来开关已经关回去,.po 又会被过滤掉。
+    local deferred_cb, deferred_flag = nil, nil
+    G_reader_settings.data.show_unsupported = nil
+    local p12 = make_env{ listing = { { is_file = true, text = "a.po" } } }
+    local prov12 = p12.ui.cloudstorage.providers.webdav
+    local real_list12 = prov12.listFolder
+    prov12.listFolder = function(url, inc)
+        deferred_flag = G_reader_settings.data.show_unsupported
+        return real_list12(url, inc)
+    end
+    prov12.run = function(cb)
+        deferred_cb = cb     -- 不执行,模拟"等联网"
+        return true
+    end
+    local r12 = {}
+    WebDAV.list_folder(p12, "/x", function(...) r12 = { ... } end)
+    eq("  推迟时回调还没执行", #r12, 0)
+    eq("  推迟期间开关仍然开着", G_reader_settings.data.show_unsupported, true)
+    check("  推迟期间 base 也还摆着", prov12.base ~= nil)
+    deferred_cb()
+    eq("  推迟执行时 listFolder 看到的开关是开的", deferred_flag, true)
+    eq("  推迟执行也列得出文件", r12[1], true)
+    eq("  执行完才原样放回开关", G_reader_settings.data.show_unsupported, nil)
+    eq("  执行完才还原 base", prov12.base, nil)
 end
 
 -- ── 删除云端文件(只给"清理过期记录"用) ────────────────────────────────────

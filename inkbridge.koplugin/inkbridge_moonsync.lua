@@ -575,6 +575,11 @@ function Moonsync.import_from_moon(plugin, opts)
     -- "页数比例"去换算页码 —— 直接传会落到完全不同的位置(实测踩过这个坑)。
     -- 内容比例只用于搜索命中时的消歧(pos_percent);搜索不命中就如实报错,
     -- 不碰任何兜底,免得"跳到一个错误的位置"比"报错"更糟。
+    --
+    -- fragment 传 **章序号 + 1**:静读天下的 star 是 0 基章序号,与 KOReader 的
+    -- DocFragment 序号恰好差 1(项目已真机验证,见 inkbridge_moon.lua)。锚点文字
+    -- 在别处重复时,`_plan_jump` 会先只在**本章**的命中里做比例消歧 ——
+    -- 章是硬边界,跨章命中几乎必然是重复文字(2026-10-08 自查加上)。
     -- 方向提示:先算出本机位置,再和远端的 (*章序号, #章内偏移) 比一比。
     -- 只是给确认框加一句话,算不出来就不加,绝不挡住导入。
     local local_pos = Moonsync.local_position(plugin)
@@ -585,6 +590,7 @@ function Moonsync.import_from_moon(plugin, opts)
         WebDAV.confirm_jump(plugin, {
             text_anchor  = snippet,
             pos_percent  = po.pct / 100,
+            fragment     = po.star + 1,
             device_label = "静读天下",
             dir_note     = dir_note,
         }, { already_confirmed = opts and opts.already_confirmed })

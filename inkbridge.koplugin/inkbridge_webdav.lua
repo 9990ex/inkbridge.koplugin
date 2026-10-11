@@ -551,13 +551,6 @@ function WebDAV.list_folder(plugin, folder_path, callback)
 
     local old_base = provider.base
     provider.base = provider_base(server)
-    local finished = false
-    local function finish(ok, items, err)
-        if finished then return end
-        finished = true
-        provider.base = old_base
-        callback(ok, items, err)
-    end
 
     -- ★ 列目录期间**临时**让 provider 不要按扩展名过滤。
     --
@@ -582,6 +575,21 @@ function WebDAV.list_folder(plugin, folder_path, callback)
         settings_table.show_unsupported = true
     end
 
+    local finished = false
+    local function finish(ok, items, err)
+        if finished then return end
+        finished = true
+        provider.base = old_base
+        -- 还原必须在 finish 里,不能在 provider.run 返回之后(2026-10-08 自查):
+        -- 未联网时 provider.run 会把回调推迟到联网之后
+        -- (NetworkMgr:willRerunWhenConnected 返回 true 时 run 立即返回、不执行回调),
+        -- 若在 run 返回后还原,listFolder 真正执行时开关已经关回去了,.po 又被过滤。
+        -- 代价:用户取消联网提示时 finish 永远不跑,标志残留为 true —— 只影响
+        -- KOReader 自己的文件浏览显示(内存态、不写设置),下次列表时原样放回,可接受。
+        if settings_table then settings_table.show_unsupported = had_unsupported end
+        callback(ok, items, err)
+    end
+
     local function request()
         local ok, result = pcall(function()
             return provider.listFolder(folder_path or "", true)
@@ -597,7 +605,6 @@ function WebDAV.list_folder(plugin, folder_path, callback)
     end
     local dispatched, err = pcall(provider.run, request)
 
-    if settings_table then settings_table.show_unsupported = had_unsupported end
     if not dispatched then finish(false, nil, tostring(err)) end
 end
 
@@ -759,7 +766,11 @@ function WebDAV._landing_info(doc, xp)
 end
 
 -- 把落点信息并进 plan（字段含义见 _landing_info）。
-function WebDAV._with_landing(doc, plan)
+-- skip 为 true 时**不核算**：滚动模式下 GotoXPointer 走 _gotoPos，会把目标行放到
+-- 视野顶部（readerrolling.lua:1207），首行天然对齐；按「落点页」去算反而会误报
+-- 「首行对不齐」（滚动模式下没有「页」这回事）。
+function WebDAV._with_landing(doc, plan, skip)
+    if skip then return plan end
     local info = WebDAV._landing_info(doc, plan.xpointer)
     for key, value in pairs(info) do plan[key] = value end
     return plan
@@ -788,9 +799,12 @@ end
 --   { method = "text",     xpointer = ..., hits = n, xpointer_mismatch = true? }
 --   { method = "page",     page = n }        固定版式
 --   { method = "percent",  page = n }        兜底
--- 前两种还会带上落点信息（分页模式下首行是否对齐、远端那一行在本页第几行）：
+-- 前两种在**分页模式**下还会带上落点信息（滚动模式跳过核算，见 _with_landing）：
 --   page / page_top / line_number / first_line_same
 -- xpointer_mismatch 表示「远端 xpointer 在本机解析成功但指的别处，已改用首行文字」。
+-- remote.fragment（可选，静读天下记录会给）：远端所在的 DocFragment 序号。
+--   文本锚点重复命中时，只在本章内的命中里做比例消歧（章是硬边界）；
+--   章内没有命中再退回全体 —— 过滤只改进挑选，不制造新的失败。
 function WebDAV._plan_jump(plugin, remote)
     local ui = plugin and plugin.ui
     if not ui or not ui.document then return nil, "no_document" end
@@ -802,6 +816,10 @@ function WebDAV._plan_jump(plugin, remote)
         local page = tonumber(remote.page)
         if page and page > 0 then return { method = "page", page = page } end
     elseif ui.rolling then
+        -- 滚动模式下 GotoXPointer 把目标行放到视野顶部，首行天然对齐；
+        -- 落点核算只对分页模式有意义（滚动模式连「页」都没有）。
+        local scroll_mode = ui.view and ui.view.view_mode == "scroll"
+
         -- 1) xpointer：先校验可解析性，再用记录里的首行文字核对它有没有指对地方
         local xp = remote.xpointer
         local xpointer_mismatch = false
@@ -810,7 +828,8 @@ function WebDAV._plan_jump(plugin, remote)
             local ok, found = pcall(doc.isXPointerInDocument, doc, xp)
             if ok and found then
                 if WebDAV._xpointer_matches_anchor(doc, xp, remote.text_anchor) then
-                    return WebDAV._with_landing(doc, { method = "xpointer", xpointer = xp })
+                    return WebDAV._with_landing(doc,
+                        { method = "xpointer", xpointer = xp }, scroll_mode)
                 end
                 -- 解析成功却与远端首行文字对不上：不能信它，改用文字搜索
                 xpointer_mismatch = true
@@ -818,7 +837,8 @@ function WebDAV._plan_jump(plugin, remote)
         end
 
         -- 2) 文本锚点：全文搜索，命中里挑最接近 pos_percent 的一个
-        --    （锚点可能重复，例如“他说。”这类短句，必须用内容比例消歧）
+        --    （锚点可能重复，例如“他说。”这类短句，必须用内容比例消歧；
+        --      有章节信息时先只在那一章里挑，见 remote.fragment 的说明）
         local anchor = remote.text_anchor
         if type(anchor) == "string" and anchor ~= ""
                 and type(doc.findAllText) == "function" then
@@ -844,18 +864,42 @@ function WebDAV._plan_jump(plugin, remote)
                     expected = math.max(0, math.min(1, ratio)) * height
                 end
                 local pick, pick_dist
-                for i = 1, #hits do
-                    local hit = hits[i]
-                    if type(hit) == "table" and type(hit.start) == "string" then
-                        if not expected then pick = hit; break end
-                        local ok_pos, pos = pcall(doc.getPosFromXPointer, doc, hit.start)
-                        if ok_pos and tonumber(pos) then
-                            local dist = math.abs(tonumber(pos) - expected)
-                            if not pick_dist or dist < pick_dist then
-                                pick, pick_dist = hit, dist
+                local function consider(hit)
+                    if not expected then pick = hit; return end
+                    local ok_pos, pos = pcall(doc.getPosFromXPointer, doc, hit.start)
+                    if ok_pos and tonumber(pos) then
+                        local dist = math.abs(tonumber(pos) - expected)
+                        if not pick_dist or dist < pick_dist then
+                            pick, pick_dist = hit, dist
+                        end
+                    elseif not pick then
+                        pick = hit
+                    end
+                end
+                -- 第一轮：只在期望章节内挑。静读天下的 star 与 KOReader 的
+                -- DocFragment 序号差 1（项目已真机验证的等价关系，见 inkbridge_moon.lua），
+                -- 所以 fragment = star + 1。跨章的重复文字是「软判据选错章」的元凶，
+                -- 章是硬边界，先按章收窄。
+                local expected_fragment = tonumber(remote.fragment)
+                if expected_fragment then
+                    for i = 1, #hits do
+                        local hit = hits[i]
+                        if type(hit) == "table" and type(hit.start) == "string" then
+                            local frag = tonumber(hit.start:match("/DocFragment%[(%d+)%]"))
+                            if frag == nil or frag == expected_fragment then
+                                consider(hit)
                             end
-                        elseif not pick then
-                            pick = hit
+                        end
+                    end
+                end
+                -- 第二轮：章内没挑到（或不带章节信息）再退回全体 —— 保持旧行为，
+                -- 不让这道过滤制造新的失败（章节口径对不上的书上仍能按比例消歧）。
+                if not pick then
+                    for i = 1, #hits do
+                        local hit = hits[i]
+                        if type(hit) == "table" and type(hit.start) == "string" then
+                            if not expected then pick = hit; break end
+                            consider(hit)
                         end
                     end
                 end
@@ -865,7 +909,8 @@ function WebDAV._plan_jump(plugin, remote)
                 end
                 if pick then
                     local plan = WebDAV._with_landing(doc,
-                        { method = "text", xpointer = pick.start, hits = #hits })
+                        { method = "text", xpointer = pick.start, hits = #hits },
+                        scroll_mode)
                     if xpointer_mismatch then plan.xpointer_mismatch = true end
                     return plan
                 end
@@ -918,10 +963,14 @@ function WebDAV.confirm_jump(plugin, remote, opts)
     if opts and opts.already_confirmed then
         WebDAV._do_jump(ui, plan)
         -- 分页模式下首行对不齐是这个模式的固有粒度(见上面「首行对齐」一节),
-        -- 但**不能静默**:至少告诉用户远端那一行落在了本页第几行。
-        if plan.first_line_same == false and plan.line_number then
-            show(string.format("墨桥：已跳转（本机排版不同，远端那一行在本页第 %d 行）。",
-                plan.line_number))
+        -- 但**不能静默**:知道对不齐就一定要说;行号算不出来时也照样说一句。
+        if plan.first_line_same == false then
+            if plan.line_number then
+                show(string.format("墨桥：已跳转（本机排版不同，远端那一行在本页第 %d 行）。",
+                    plan.line_number))
+            else
+                show("墨桥：已跳转（本机排版不同，首行对不齐）。")
+            end
         else
             show("墨桥：已跳转到云端位置。")
         end

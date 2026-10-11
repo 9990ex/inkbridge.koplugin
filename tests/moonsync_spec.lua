@@ -669,6 +669,55 @@ do
        type(last_request and last_request.sink), "function")
 end
 
+-- ── 导入交给跳转流程的那份记录 ─────────────────────────────────────────────
+-- 静读天下这条路**也要**享受与 KO 记录同样的跳转链路(首行文字 + 落点如实报差),
+-- 而且它自己多一个硬锚点:章序号(star + 1 = DocFragment 序号,项目已真机验证)。
+-- 这里把 import_from_moon 交给 confirm_jump 的记录原样截下来检查。
+print("== import_from_moon 交给 confirm_jump 的记录 ==")
+do
+    MS.request = REAL_REQUEST
+    local WebDAV = require("inkbridge_webdav")
+    local REAL_CONFIRM = WebDAV.confirm_jump
+    local got_remote, got_opts
+    WebDAV.confirm_jump = function(_, remote, opts)
+        got_remote, got_opts = remote, opts
+    end
+    local function fake_http(code, body)
+        return function(req)
+            if req.sink and body then req.sink(body) end
+            return 1, code, {}, "HTTP/1.1 " .. tostring(code)
+        end
+    end
+
+    http_reply = fake_http(200, "1785683827794*0@0#2:62%")
+    list_folder_reply = { ok = true, items = {} }
+    local plugin = {
+        server = { type = "webdav", address = "https://dav.jianguoyun.com/dav",
+                   url = "/books", username = "u", password = "p" },
+        ui = { document = { file = "fake.epub",
+                            getXPointer = function() return nil end } },
+    }
+    -- 本用例只验证"交给跳转流程的那份记录":fake.epub 的章节太短(块内凑不满
+    -- 6 个字,snippet_in_blocks 会如实返回 nil),所以把截片段这一步桩掉 ——
+    -- 片段截取本身有 moon_spec 盯着。
+    local REAL_SNIPPET = Moon.snippet_in_blocks
+    Moon.snippet_in_blocks = function() return "顾慎为很清楚这些刀客的热情能持续多久" end
+
+    local ok, err = pcall(MS.import_from_moon, plugin, {})
+    WebDAV.confirm_jump = REAL_CONFIRM
+    Moon.snippet_in_blocks = REAL_SNIPPET
+
+    check("导入流程不炸", ok, err)
+    check("走到了跳转一步", got_remote ~= nil)
+    eq("带首行文字锚点", type(got_remote and got_remote.text_anchor), "string")
+    eq("章节序号 = star + 1", got_remote and got_remote.fragment, 1)
+    eq("内容比例原样带", got_remote and got_remote.pos_percent, 0.62)
+    check("不带 percent(那是页数比例,传了会跳错位置)",
+        got_remote and got_remote.percent == nil)
+    check("没被自动确认(菜单路径要弹确认框)",
+        not (got_opts and got_opts.already_confirmed))
+end
+
 -- ── 兼容平台 + 手动选进度文件 ─────────────────────────────────────────────
 print("== 兼容平台(只有静读天下真能用) ==")
 do
