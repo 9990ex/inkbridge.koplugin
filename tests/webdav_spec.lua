@@ -32,8 +32,16 @@ package.preload["ui/uimanager"] = function()
         nextTick = function(fn) fn() end,
     }
 end
-package.preload["ui/widget/infomessage"] = function() return { new = function(_, o) return o or {} end } end
-package.preload["ui/widget/confirmbox"]  = function() return { new = function(_, o) return o or {} end } end
+package.preload["ui/widget/infomessage"] = function()
+    -- 同样记下最后一条提示：自动跳转只靠提示告知用户「差几行」。
+    return { new = function(_, o) _last_message = o and o.text or nil; return o or {} end }
+end
+-- ConfirmBox 的桩顺手记下最后一次的构造参数：确认框文案（尤其是「首行对不齐」那一行）
+-- 是用户唯一能看见的说明，必须锁定，不能只靠肉眼。
+_last_confirm = nil
+package.preload["ui/widget/confirmbox"] = function()
+    return { new = function(_, o) _last_confirm = o; return o or {} end }
+end
 package.preload["ui/widget/buttondialog"] = function() return { new = function(_, o) return o or {} end } end
 package.preload["ui/event"]              = function() return { new = function(_, n, a) return { name = n, arg = a } end } end
 package.preload["rapidjson"] = function()
@@ -385,11 +393,28 @@ local function plan_doc(opts)
             return opts.hits
         end,
         getPosFromXPointer = function(_, xp)
+            if opts.positions and opts.positions[xp] then return opts.positions[xp] end
             if xp == "hit-far" then return 10000 end
             return 90000
         end,
         clearSelection = function() calls.cleared = true end,
         getPageCount = function() return 8689 end,
+        -- 首行核对 / 落点核算用到的接口：默认**不存在**，由用例按需打开，
+        -- 这样第 5 节的既有用例行为完全不变。
+        configurable = opts.configurable or {},
+        getTextFromXPointer = opts.text_at and function(_, xp)
+            calls.text_at = xp
+            return opts.text_at[xp]
+        end or nil,
+        getPageFromXPointer = opts.page_from and function(_, xp)
+            calls.page_from = xp
+            return opts.page_from[xp]
+        end or nil,
+        getPageXPointer = opts.page_top and function(_, page)
+            calls.page_top = page
+            return opts.page_top[page]
+        end or nil,
+        compareXPointers = opts.compare or nil,
     }
 end
 
@@ -474,6 +499,265 @@ do
     eq("完全没有位置信息时返回 nil", plan, nil)
     eq("原因说明", reason, "no_position")
 end
+
+-- ============================================================================
+print("== 5b. 首行文字核对 与 落点核算（分页模式的「首行对齐」）==")
+-- ============================================================================
+-- 用户要求「不同设备上第一行内容要一样」。分页模式在绘制上就是一整页一整页画的
+-- （ReaderView:drawPageView -> drawCurrentViewByPage -> gotoPage），屏幕顶端永远
+-- 只可能是本机某一页的第一行，所以插件能保证的是：
+--   1) 定位用**首行文字**，并且用它对 xpointer 做交叉校验（xpointer 可能「解析成功
+--      却指到别处」，第三方分支的 DocFragment 切分不同就会这样）；
+--   2) 落点取「包含远端那一行的那一页」；
+--   3) 把「远端那一行在本页第几行」算出来如实告诉用户，不假装对齐。
+do
+    -- xpointer 解析成功，且该处文字与记录里的首行文字一致 -> 就用 xpointer
+    local doc = plan_doc({ xpointer_ok = true, text_at = { [XP_OK] = ANCHOR } })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("文字核对通过 -> 仍用 xpointer", plan and plan.method, "xpointer")
+    eq("核对时读的是这个 xpointer 处的文字", calls.text_at, XP_OK)
+    eq("没有多此一举去搜索", calls.search, nil)
+    check("没有标记 mismatch", plan and plan.xpointer_mismatch == nil)
+end
+
+do
+    -- xpointer 解析成功，但文字对不上（第三方分支指错了地方）-> 改用首行文字搜索
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = "这完全是另外一段正文，和远端首行对不上" },
+        hits = { { start = "hit-near", ["end"] = "e1" } },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        xpointer = XP_OK, text_anchor = ANCHOR, pos_percent = 0.9,
+    })
+    eq("xpointer 指到别处 -> 降级到首行文字", plan and plan.method, "text")
+    eq("落点用搜索命中的位置", plan and plan.xpointer, "hit-near")
+    eq("标记 mismatch（确认框要据此说明）", plan and plan.xpointer_mismatch, true)
+    eq("搜索用的就是记录里的首行文字", calls.search and calls.search.pattern, ANCHOR)
+end
+
+do
+    -- 旧记录没有 text_anchor：无从核对，不能因此把好好的 xpointer 丢掉
+    local doc = plan_doc({ xpointer_ok = true })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK })
+    eq("没有首行文字时仍用 xpointer", plan and plan.method, "xpointer")
+    check("不误报 mismatch", plan and plan.xpointer_mismatch == nil)
+end
+
+do
+    -- 本机取不到该处文字（接口返回 nil）时同样不推翻 xpointer
+    local doc = plan_doc({ xpointer_ok = true, text_at = {} })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("取不到文字时不降级", plan and plan.method, "xpointer")
+end
+
+do
+    -- 落点核算：远端那一行在本页第 3 行（页首与该行相差 2 个行高）
+    -- 行高按 KOReader 自己的式子算：font_size(10) × 1.1 × line_spacing(100)% = 11
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-3" },
+        positions = { [XP_OK] = 90022, ["page-top-3"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("落点页", plan and plan.page, 3)
+    eq("页首 xpointer 一并带回", plan and plan.page_top, "page-top-3")
+    eq("远端那一行在本页第 3 行", plan and plan.line_number, 3)
+    eq("首行对不齐（第 3 行 != 页首）", plan and plan.first_line_same, false)
+end
+
+do
+    -- 页首就是远端那一行 -> 首行完全对齐
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 7 },
+        page_top = { [7] = "page-top-same" },
+        positions = { [XP_OK] = 90000, ["page-top-same"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("首行对齐标记", plan and plan.first_line_same, true)
+    eq("行号是第 1 行", plan and plan.line_number, 1)
+end
+
+do
+    -- 半个行高以内算同一行（xpointer 写法不同不该误报「对不齐」）
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 7 },
+        page_top = { [7] = "page-top-same" },
+        positions = { [XP_OK] = 90005, ["page-top-same"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("差 5px（不足半行）仍算首行对齐", plan and plan.line_number, 1)
+end
+
+do
+    -- 没有字体设置 -> 报不出行号，但不能编数字
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 7 },
+        page_top = { [7] = "page-top-x" },
+        positions = { [XP_OK] = 90050, ["page-top-x"] = 90000 },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("算不出行号时字段为 nil", plan and plan.line_number, nil)
+    eq("也不声称对齐/不对齐", plan and plan.first_line_same, nil)
+end
+
+do
+    -- 没有字体设置时退回比较 xpointer 本身
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 7 },
+        page_top = { [7] = "page-top-x" },
+        compare = function(_, a, b) return a == b and 0 or -1 end,
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("不同点 -> 判定为对不齐", plan and plan.first_line_same, false)
+    eq("比较不出来行号", plan and plan.line_number, nil)
+
+    local doc2 = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 7 },
+        page_top = { [7] = XP_OK },
+        compare = function(_, a, b) return a == b and 0 or -1 end,
+    })
+    local plan2 = WebDAV._plan_jump({ ui = plan_ui(doc2) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("同一点 -> 首行对齐", plan2 and plan2.first_line_same, true)
+    eq("同一点时行号是 1", plan2 and plan2.line_number, 1)
+end
+
+do
+    -- 落点核算的所有接口都可能不存在（老版本 KOReader / 极简构建）：不许报错
+    local doc = plan_doc({ xpointer_ok = true, text_at = { [XP_OK] = ANCHOR } })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("缺接口时照常给出 xpointer 方案", plan and plan.method, "xpointer")
+    eq("没有可核算的落点信息", plan and plan.page, nil)
+    eq("不声称对齐", plan and plan.first_line_same, nil)
+end
+
+do
+    -- _line_height：没有 device 模块时用未缩放的皮尺（保证测试与设备口径一致）
+    package.loaded["device"] = nil
+    package.preload["device"] = nil
+    local h = WebDAV._line_height({ configurable = { font_size = 18, line_spacing = 130 } })
+    check("按 font_size × 1.1 × line_spacing% 估算", math.abs((h or 0) - 18 * 1.1 * 1.3) < 1e-6,
+        tostring(h))
+    eq("没有 font_size 就报 nil（不猜）", WebDAV._line_height({ configurable = {} }), nil)
+    eq("不是表也安全", WebDAV._line_height(nil), nil)
+
+    -- device.screen.scaleBySize 存在时按设备缩放（KOReader 在设备上就是这样）
+    package.loaded["device"] = nil
+    package.preload["device"] = function()
+        return { screen = { scaleBySize = function(_, v) return v * 2 end } }
+    end
+    local scaled = WebDAV._line_height({ configurable = { font_size = 18, line_spacing = 130 } })
+    check("用设备缩放", math.abs((scaled or 0) - 2 * 18 * 1.1 * 1.3) < 1e-6, tostring(scaled))
+    package.loaded["device"] = nil
+    package.preload["device"] = nil
+end
+
+-- ── 确认框文案：对齐时不加行；对不齐必须说清楚 ─────────────────────────────
+do
+    local function jump_ui(doc)
+        local events = {}
+        return {
+            document = doc,
+            rolling = { getLastProgress = function() end },
+            handleEvent = function(_, ev) events[#events + 1] = ev end,
+        }, events
+    end
+
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-3" },
+        positions = { [XP_OK] = 90000, ["page-top-3"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local ui, events = jump_ui(doc)
+    _last_confirm = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR, percent = 0.25 })
+    check("弹出了确认框", _last_confirm ~= nil)
+    local text = _last_confirm and _last_confirm.text or ""
+    check("首行对齐时不加「对不齐」那一行", text:find("首行对不齐", 1, true) == nil, text)
+    check("照旧说明远端进度", text:find("远端阅读位置", 1, true) ~= nil, text)
+    _last_confirm.ok_callback()
+    eq("点跳转发的是 xpointer 事件", events[1] and events[1].name, "GotoXPointer")
+    eq("事件里带上位置", events[1] and events[1].arg, XP_OK)
+end
+
+do
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-3" },
+        positions = { [XP_OK] = 90022, ["page-top-3"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local ui = plan_ui(doc)
+    ui.handleEvent = function() end
+    _last_confirm = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR, percent = 0.25 })
+    local text = _last_confirm and _last_confirm.text or ""
+    check("对不齐时如实写出第几行",
+        text:find("首行对不齐：远端那一行在本页第 3 行", 1, true) ~= nil, text)
+end
+
+do
+    -- 自动跳转（already_confirmed，例如「打开书时自动核对」）也必须报出差几行
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-3" },
+        positions = { [XP_OK] = 90022, ["page-top-3"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local ui = plan_ui(doc)
+    ui.handleEvent = function() end
+    _last_message = nil
+    _last_confirm = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR, percent = 0.25 },
+        { already_confirmed = true })
+    eq("自动跳转不再弹确认框", _last_confirm, nil)
+    check("自动跳转也说明差几行",
+        type(_last_message) == "string" and _last_message:find("本页第 3 行", 1, true) ~= nil,
+        tostring(_last_message))
+end
+
+do
+    -- xpointer 指到别处时，确认框要说明「忽略它、改用首行文字」（这是可诊断性的一半）
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = "这完全是另外一段正文，和远端首行对不上" },
+        hits = { { start = "hit-near", ["end"] = "e1" } },
+        page_from = { [XP_OK] = 3, ["hit-near"] = 4 },
+        page_top = { [4] = "page-top-4" },
+        positions = { ["hit-near"] = 90000, ["page-top-4"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    local ui = plan_ui(doc)
+    ui.handleEvent = function() end
+    _last_confirm = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR, percent = 0.25 })
+    local text = _last_confirm and _last_confirm.text or ""
+    check("说明 xpointer 指到别处", text:find("指到别处", 1, true) ~= nil, text)
+    check("仍然会跳（不是拒绝）", text:find("跳转过去吗？", 1, true) ~= nil, text)
+end
+
 
 -- ============================================================================
 print("== 6. describe_error（内部错误码 → 用户看得懂的中文）==")

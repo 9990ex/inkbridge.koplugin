@@ -11,6 +11,7 @@ local ConfirmBox = require("ui/widget/confirmbox")
 local Event = require("ui/event")
 local ButtonDialog = require("ui/widget/buttondialog")
 local util = require("util")
+local State = require("inkbridge_state")
 
 local WebDAV = {}
 
@@ -639,6 +640,131 @@ function WebDAV.choose_history(plugin, entries, on_select, extra)
     UIManager:show(plugin._history_dialog)
 end
 
+-- ── 「首行对齐」：用首行文字定位，并把落点差几行如实算出来 ────────────────
+--
+-- 用户要求（2026-10-08）：**不同设备上第一行内容要一样**。查证后的结论与依据：
+--
+--   * 分页模式在**绘制**上就是一整页一整页画的：
+--     ReaderView:drawPageView -> CreDocument:drawCurrentViewByPage -> gotoPage(page)
+--     （koreader-master/frontend/apps/reader/modules/readerview.lua:487、
+--      frontend/document/credocument.lua:850）；只有滚动模式才走
+--     drawCurrentViewByPos（按 y 定位，readerview.lua:496）。
+--   * 所以分页模式下屏幕顶端永远只可能是「本机某一页的第一行」：
+--     readerrolling.lua:1203 的 _gotoXPointer 在 page 模式一律
+--     _gotoPage(getPageFromXPointer(xp))；KOReader 自己要把选区滚出当前页时
+--     也必须先切滚动模式（readerhighlight.lua:1874-1886），分页模式下连上下拖动
+--     都只对滚动模式生效（readerrolling.lua:582）。
+--   * 结论：**定位再准也控制不了「那一行显示在屏幕第几行」**。用户选择保持翻页模式，
+--     因此墨桥能做的是：落点取「包含远端那一行的那一页」（宁可重读，不可漏读），
+--     并把「远端那一行在本页第几行」如实算出来告诉用户，不假装对齐。
+--
+-- 另外用首行文字做一次**交叉校验**：xpointer 在第三方分支上（如汉王 C7T）可能
+-- 「解析成功却指到别处」（DocFragment 切分不同）。记录里的 text_anchor 就是远端
+-- 屏幕第一行的正文，对不上就改用全文搜索 —— 那条路与 DOM 索引、spine 切分无关。
+
+-- 某个 xpointer 处的「首行文字」，算法与 State.read_position 记录 text_anchor 时
+-- 完全一致（同一段 DOM 文本 + 同一个字符偏移，与排版无关），这样才能拿来比对。
+function WebDAV._anchor_of_xpointer(doc, xp)
+    if type(doc) ~= "table" or type(xp) ~= "string" or xp == "" then return nil end
+    if type(doc.getTextFromXPointer) ~= "function" then return nil end
+    local ok, text = pcall(doc.getTextFromXPointer, doc, xp)
+    if not ok or type(text) ~= "string" or text == "" then return nil end
+    return State._make_anchor(text, State._xpointer_text_offset(xp))
+end
+
+-- xpointer 指的地方，和远端记录的首行文字是不是同一处。
+--   * 记录里没有 text_anchor（旧记录）或本机取不到文字 -> 无从核对，不推翻它；
+--   * 拿得到文字就必须**逐字相同**：长度只有 20 字，前缀相同不足以证明是同一处。
+function WebDAV._xpointer_matches_anchor(doc, xp, anchor)
+    if type(anchor) ~= "string" or anchor == "" then return true end
+    local here = WebDAV._anchor_of_xpointer(doc, xp)
+    if not here then return true end
+    return here == anchor
+end
+
+-- 本机一行的像素高度。照抄 KOReader 自己算滚动步长用的式子
+-- （readerrolling.lua:902 的 font_size × 1.1 × line_spacing%），避免两处口径不同。
+-- 取不到字体设置时返回 nil（调用方就不报行号，而不是编一个数字）。
+function WebDAV._line_height(doc)
+    local configurable = type(doc) == "table" and doc.configurable or nil
+    local font_size = tonumber(configurable and configurable.font_size)
+    if not font_size then return nil end
+    local spacing = tonumber(configurable.line_spacing) or 100
+    local height = font_size * 1.1 * spacing / 100
+    if height <= 0 then return nil end
+    local ok_dev, Device = pcall(require, "device")
+    if ok_dev and type(Device) == "table" and Device.screen
+            and type(Device.screen.scaleBySize) == "function" then
+        local ok, scaled = pcall(Device.screen.scaleBySize, Device.screen, height)
+        if ok and tonumber(scaled) then return tonumber(scaled) end
+    end
+    return height
+end
+
+-- 算出跳过去之后，远端那一行落在本机这一页的第几行（页首是第 1 行）。
+-- 返回 nil 表示算不出来（缺接口 / 缺字体设置），此时不编数字。
+--
+-- 返回：
+--   page            落点页
+--   page_top        该页页首的 xpointer
+--   line_number     远端那一行在本页的行号（第 1 行 = 页首，即首行对齐）
+--   first_line_same 首行是否与远端一致（nil = 无法判断）
+function WebDAV._landing_info(doc, xp)
+    local info = {}
+    if type(doc) ~= "table" or type(xp) ~= "string" or xp == "" then return info end
+    if type(doc.getPageFromXPointer) ~= "function" then return info end
+
+    local ok_page, page = pcall(doc.getPageFromXPointer, doc, xp)
+    page = ok_page and tonumber(page) or nil
+    if not page or page < 1 then return info end
+    info.page = page
+
+    if type(doc.getPageXPointer) == "function" then
+        local ok_top, top = pcall(doc.getPageXPointer, doc, page)
+        if ok_top and type(top) == "string" and top ~= "" then
+            info.page_top = top
+        end
+    end
+
+    -- 先按「纵向偏移 ÷ 行高」算行号：这直接回答用户的问题（差几行），
+    -- 而且不会因为 xpointer 写法不同（元素 vs 文本节点）而误报不一致。
+    if info.page_top and type(doc.getPosFromXPointer) == "function" then
+        local ok_here, here_y = pcall(doc.getPosFromXPointer, doc, xp)
+        local ok_top, top_y = pcall(doc.getPosFromXPointer, doc, info.page_top)
+        local line_height = WebDAV._line_height(doc)
+        if ok_here and ok_top and tonumber(here_y) and tonumber(top_y)
+                and line_height and line_height > 0 then
+            local delta = tonumber(here_y) - tonumber(top_y)
+            if delta < 0 then delta = 0 end
+            local line_number = math.floor(delta / line_height + 0.5) + 1
+            info.line_number = line_number
+            info.first_line_same = line_number == 1
+            return info
+        end
+    end
+
+    -- 算不出行号时退而求其次：直接比较两个 xpointer 是否同一点
+    if info.page_top then
+        if info.page_top == xp then
+            info.line_number, info.first_line_same = 1, true
+        elseif type(doc.compareXPointers) == "function" then
+            local ok_cmp, cmp = pcall(doc.compareXPointers, doc, info.page_top, xp)
+            if ok_cmp and tonumber(cmp) then
+                info.first_line_same = tonumber(cmp) == 0
+                if info.first_line_same then info.line_number = 1 end
+            end
+        end
+    end
+    return info
+end
+
+-- 把落点信息并进 plan（字段含义见 _landing_info）。
+function WebDAV._with_landing(doc, plan)
+    local info = WebDAV._landing_info(doc, plan.xpointer)
+    for key, value in pairs(info) do plan[key] = value end
+    return plan
+end
+
 -- 规划一次跳转：按“可靠程度从高到低”挑选定位方式。
 --
 -- 为什么需要分级：页码只在本机排版下有意义（两台设备可能是 8922 页 vs 8689 页），
@@ -659,9 +785,12 @@ end
 --
 -- 返回 plan 表，或 nil + 原因：
 --   { method = "xpointer", xpointer = ... }
---   { method = "text",     xpointer = ..., hits = n }
+--   { method = "text",     xpointer = ..., hits = n, xpointer_mismatch = true? }
 --   { method = "page",     page = n }        固定版式
 --   { method = "percent",  page = n }        兜底
+-- 前两种还会带上落点信息（分页模式下首行是否对齐、远端那一行在本页第几行）：
+--   page / page_top / line_number / first_line_same
+-- xpointer_mismatch 表示「远端 xpointer 在本机解析成功但指的别处，已改用首行文字」。
 function WebDAV._plan_jump(plugin, remote)
     local ui = plugin and plugin.ui
     if not ui or not ui.document then return nil, "no_document" end
@@ -673,13 +802,18 @@ function WebDAV._plan_jump(plugin, remote)
         local page = tonumber(remote.page)
         if page and page > 0 then return { method = "page", page = page } end
     elseif ui.rolling then
-        -- 1) xpointer（先校验可解析性）
+        -- 1) xpointer：先校验可解析性，再用记录里的首行文字核对它有没有指对地方
         local xp = remote.xpointer
+        local xpointer_mismatch = false
         if type(xp) == "string" and xp ~= ""
                 and type(doc.isXPointerInDocument) == "function" then
             local ok, found = pcall(doc.isXPointerInDocument, doc, xp)
             if ok and found then
-                return { method = "xpointer", xpointer = xp }
+                if WebDAV._xpointer_matches_anchor(doc, xp, remote.text_anchor) then
+                    return WebDAV._with_landing(doc, { method = "xpointer", xpointer = xp })
+                end
+                -- 解析成功却与远端首行文字对不上：不能信它，改用文字搜索
+                xpointer_mismatch = true
             end
         end
 
@@ -730,7 +864,10 @@ function WebDAV._plan_jump(plugin, remote)
                     pcall(doc.clearSelection, doc)
                 end
                 if pick then
-                    return { method = "text", xpointer = pick.start, hits = #hits }
+                    local plan = WebDAV._with_landing(doc,
+                        { method = "text", xpointer = pick.start, hits = #hits })
+                    if xpointer_mismatch then plan.xpointer_mismatch = true end
+                    return plan
                 end
             end
         end
@@ -780,7 +917,14 @@ function WebDAV.confirm_jump(plugin, remote, opts)
     -- 调用方已经问过用户了(例如"打开书时自动核对"):直接跳,不再问第二遍。
     if opts and opts.already_confirmed then
         WebDAV._do_jump(ui, plan)
-        show("墨桥：已跳转到云端位置。")
+        -- 分页模式下首行对不齐是这个模式的固有粒度(见上面「首行对齐」一节),
+        -- 但**不能静默**:至少告诉用户远端那一行落在了本页第几行。
+        if plan.first_line_same == false and plan.line_number then
+            show(string.format("墨桥：已跳转（本机排版不同，远端那一行在本页第 %d 行）。",
+                plan.line_number))
+        else
+            show("墨桥：已跳转到云端位置。")
+        end
         return
     end
 
@@ -822,8 +966,26 @@ function WebDAV.confirm_jump(plugin, remote, opts)
         if type(remote.xpointer) == "string" and remote.xpointer ~= "" then
             table.insert(lines, "（远端 xpointer 在本机无法解析，已降级）")
         end
-    elseif plan.method == "text" and plan.hits and plan.hits > 1 then
-        table.insert(lines, string.format("（锚点命中 %d 处，取最接近的）", plan.hits))
+    elseif plan.method == "text" then
+        if plan.xpointer_mismatch then
+            -- 这条信息很值钱：说明远端 xpointer 在本机「解析成功但指错了地方」
+            -- （第三方分支的 DocFragment 切分不同就会这样），所以改用首行文字定位。
+            table.insert(lines, "本机定位方式：首行文字搜索（远端 xpointer 在本机指到别处，已忽略）")
+        elseif plan.hits and plan.hits > 1 then
+            table.insert(lines, string.format("（锚点命中 %d 处，取最接近的）", plan.hits))
+        end
+    end
+
+    -- 首行能不能对齐，是用户最关心的一件事，所以如实写出来。
+    -- 分页模式的固有粒度做不到一致（见「首行对齐」一节），这里不掩饰；
+    -- 对齐时**不加行** —— 没消息就是好消息。
+    if plan.first_line_same == false then
+        if plan.line_number then
+            table.insert(lines, string.format(
+                "首行对不齐：远端那一行在本页第 %d 行（本机排版与远端不同）", plan.line_number))
+        else
+            table.insert(lines, "首行对不齐：远端那一行在本页靠下的位置（本机排版与远端不同）")
+        end
     end
     table.insert(lines, "跳转过去吗？")
 
