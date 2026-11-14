@@ -10,9 +10,8 @@
 
 - 主仓库：`D:\UserData\Documents\开发\墨桥`
 - 主分支：`main`
-- 当前提交：`74e94cc`（实现静读天下整书字符坐标导入并打包 0.3.7-alpha）
-- 当前工作区：交接文档创建前干净；源码提交为 `74e94cc`。本交接文件本身是本次新增文档。
-- 相对 `origin/main`：当前源码原本领先 7 个提交；没有推送。
+- 代码与安装包对应的提交：`74e94cc`（实现静读天下整书字符坐标导入并打包 0.3.7-alpha）。本交接文档随后以文档提交单独保存；查当前 HEAD 用 `git log -1 --oneline`。
+- 当前分支：`main`；工作区干净。包含未推送的本地提交，不要据此推断远端状态。
 - 安装包：`D:\UserData\Documents\开发\墨桥\releases\inkbridge.moon.koplugin-v0.3.7-alpha.zip`
 - 包大小：93,567 字节；SHA-256：`4A29291F240B95136CE72261DFF57F4A7AE6EDF65A70F7183D7DB37F6BE7991C`
 - 打包器逐文件核对通过，ZIP 完整性检查通过。`releases/` 被 Git 忽略，包是本地工件，不在提交内。
