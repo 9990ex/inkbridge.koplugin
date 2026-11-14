@@ -398,7 +398,7 @@ local function plan_doc(opts)
             return 90000
         end,
         clearSelection = function() calls.cleared = true end,
-        getPageCount = function() return 8689 end,
+        getPageCount = function() calls.page_count = true; return 8689 end,
         -- 首行核对 / 落点核算用到的接口：默认**不存在**，由用例按需打开，
         -- 这样第 5 节的既有用例行为完全不变。
         configurable = opts.configurable or {},
@@ -451,6 +451,60 @@ do
         and calls.search.ci == true and calls.search.max_hits == 8,
         calls.search and (calls.search.pattern .. "/" .. tostring(calls.search.ci) .. "/" .. tostring(calls.search.max_hits)))
     check("搜索顺带产生的高亮已清理", calls.cleared == true)
+end
+
+do
+    -- Moon+ 导入不相信 DocFragment/百分比：全文必须唯一命中才允许跳转。
+    local doc = plan_doc({ xpointer_ok = false,
+        hits = { { start = "unique-whole-book-hit", ["end"] = "e1" } },
+    })
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        text_anchor = ANCHOR, require_unique_text = true,
+        fragment = 999, pos_percent = 0.01, percent = 0.9,
+    })
+    eq("唯一命中采用全文搜索位置", plan and plan.xpointer, "unique-whole-book-hit")
+    eq("唯一命中标记", plan and plan.unique_text, true)
+    eq("唯一模式不受 fragment 限定", calls.search and calls.search.pattern, ANCHOR)
+    check("唯一模式清除搜索高亮", calls.cleared == true)
+    eq("唯一模式不调用页数比例兜底", calls.page_count, nil)
+end
+
+do
+    local doc = plan_doc({ xpointer_ok = false,
+        hits = {
+            { start = "duplicate-one", ["end"] = "e1" },
+            { start = "duplicate-two", ["end"] = "e2" },
+        },
+    })
+    local plan, reason = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        text_anchor = ANCHOR, require_unique_text = true, percent = 0.9,
+    })
+    eq("重复命中时不猜位置", plan, nil)
+    eq("重复命中错误码", reason, "moon_anchor_ambiguous")
+    eq("重复命中不回退页数比例", calls.page_count, nil)
+    check("重复命中清除搜索高亮", calls.cleared == true)
+end
+
+do
+    local doc = plan_doc({ xpointer_ok = false, hits = {} })
+    local plan, reason = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        text_anchor = ANCHOR, require_unique_text = true, percent = 0.9,
+    })
+    eq("零命中时不跳转", plan, nil)
+    eq("零命中错误码", reason, "moon_anchor_not_found")
+    eq("零命中不回退页数比例", calls.page_count, nil)
+end
+
+do
+    local doc = plan_doc({ xpointer_ok = false,
+        hits = { { start = "unique-hit", ["end"] = "e1" } },
+    })
+    doc.findAllText = nil
+    local plan, reason = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
+        text_anchor = ANCHOR, require_unique_text = true, percent = 0.9,
+    })
+    eq("全文搜索接口缺失时不跳", plan, nil)
+    eq("缺接口错误码", reason, "moon_anchor_search_failed")
 end
 
 do
@@ -694,49 +748,6 @@ do
         _last_confirm and _last_confirm.text)
 end
 
-do
-    -- 静读天下记录带章节(star + 1 = DocFragment 序号):锚点文字重复命中时,
-    -- **只在那一章**的命中里做比例消歧 —— 比例是软判据,章是硬边界。
-    -- 这里"比例最近"的命中在 3 章,真正的在 5 章,必须选 5 章那个。
-    local doc = plan_doc({
-        xpointer_ok = false,
-        hits = {
-            { start = "/body/DocFragment[3]/body/div/p[1]/text().0", ["end"] = "e1" },
-            { start = "/body/DocFragment[5]/body/div/p[9]/text().7", ["end"] = "e2" },
-        },
-        positions = {
-            ["/body/DocFragment[3]/body/div/p[1]/text().0"] = 10000,
-            ["/body/DocFragment[5]/body/div/p[9]/text().7"] = 90000,
-        },
-    })
-    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
-        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.1, fragment = 5,
-    })
-    eq("重复命中按章节收窄", plan and plan.xpointer,
-        "/body/DocFragment[5]/body/div/p[9]/text().7")
-    eq("仍是文本锚点方案", plan and plan.method, "text")
-end
-
-do
-    -- 期望章节里没有命中:退回全体按比例挑 —— 过滤只改进挑选,不制造新的失败
-    local doc = plan_doc({
-        xpointer_ok = false,
-        hits = {
-            { start = "/body/DocFragment[3]/body/div/p[1]/text().0", ["end"] = "e1" },
-            { start = "/body/DocFragment[4]/body/div/p[9]/text().7", ["end"] = "e2" },
-        },
-        positions = {
-            ["/body/DocFragment[3]/body/div/p[1]/text().0"] = 10000,
-            ["/body/DocFragment[4]/body/div/p[9]/text().7"] = 90000,
-        },
-    })
-    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, {
-        xpointer = XP_BAD, text_anchor = ANCHOR, pos_percent = 0.1, fragment = 7,
-    })
-    eq("章内没有命中时退回全体按比例挑", plan and plan.xpointer,
-        "/body/DocFragment[3]/body/div/p[1]/text().0")
-end
-
 -- ── 确认框文案：对齐时不加行；对不齐必须说清楚 ─────────────────────────────
 do
     local function jump_ui(doc)
@@ -862,6 +873,12 @@ do
     eq("嵌套错误码会被拆开翻译", WebDAV.describe_error("remote_record_invalid_json"),
         "远端记录无法解析：记录不是合法的 JSON")
     eq("跳转规划的原因也翻译", WebDAV.describe_error("no_document"), "当前没有打开的文档")
+    eq("静读天下零命中有安全提示", WebDAV.describe_error("moon_anchor_not_found"),
+       "正文片段在本书中未找到，为避免错跳已停止")
+    eq("静读天下重复命中有安全提示", WebDAV.describe_error("moon_anchor_ambiguous"),
+       "正文片段在本书中重复出现，无法唯一确认，为避免错跳已停止")
+    eq("静读天下搜索失败有说明", WebDAV.describe_error("moon_anchor_search_failed"),
+       "本机全文搜索未能完成")
     check("HTTP 403 指明下载失败",
         WebDAV.describe_error("WebDAV download failed: HTTP 403"):find("下载失败", 1, true) ~= nil)
     check("HTTP 403 附带权限提示",

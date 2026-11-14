@@ -33,11 +33,12 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 当前状态
 
-**已有可用的 0.3.5-alpha**，可在 [Releases](../../releases) 下载安装包。
+**本地版本为 0.3.7-alpha**，可在本机 `releases/` 目录取得安装包。
 0.3.0 是正式版基线；之后的小改动继续走 **`0.3.x-alpha`**（0.3.1-alpha、0.3.2-alpha…），
 不跳大版本号。
-上传、下载、跨设备跳转的完整流程已在 Android 与 Kindle 设备上实测通过，
-与静读天下（Moon+ Reader）的双向互通也已真机验证。
+此前版本的上传、下载与跨设备跳转已在 Android 与 Kindle 设备上实测通过，
+静读天下（Moon+ Reader）的双向互通也已真机验证。0.3.7-alpha 更新了静读天下导入定位逻辑，
+本地回归通过；这一版的新定位路径仍需设备实测。
 
 这是 0.x 版本：核心功能已真机验证，但仍在打磨，不代表稳定版本。使用前请先读插件自己的说明
 [`inkbridge.koplugin/README.md`](inkbridge.koplugin/README.md)。
@@ -61,7 +62,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ### 参与开发
 
-见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（689 条断言，不需要设备）、
+见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（923 条断言，不需要设备）、
 进度记录的定位原理，以及已知问题清单。
 
 ## 设计原则
@@ -81,7 +82,7 @@ InkBridge 是独立项目，与 Syncery 没有官方隶属关系。早期设计�
 ## 开发方式
 
 **Powered by DeepSeek** —— 本项目的代码、回归测试与文档均在 DeepSeek 的辅助下完成。
-所有改动都要跑过 689 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
+所有改动都要跑过 923 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
 关键链路由真机验证。
 
 > DeepSeek 在这里是开发工具。本项目与 DeepSeek 官方没有任何隶属关系。

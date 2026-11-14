@@ -103,8 +103,10 @@ local CH1 = '<body><h1>第一章</h1><p>一二三四五</p><p>六七八九十</p
 local CH2 = '<body><p>甲乙丙丁戊己庚辛</p></body>'
 local OPF = '<package><manifest>'
     .. '<item id="c1" href="Text/c1.xhtml" media-type="application/xhtml+xml"/>'
+    .. '<item id="img" href="Images/cover.jpg" media-type="image/jpeg"/>'
     .. '<item id="c2" href="Text/c2.xhtml" media-type="application/xhtml+xml"/>'
-    .. '</manifest><spine><itemref idref="c1"/><itemref idref="c2"/></spine></package>'
+    .. '</manifest><spine><itemref idref="c1"/><itemref idref="img"/>'
+    .. '<itemref idref="c2"/></spine></package>'
 
 package.preload["ffi/archiver"] = function()
     return {
@@ -176,7 +178,8 @@ print("== 模块加载与导出 ==")
 do
     check("moonsync 能加载(语法/依赖)", type(MS) == "table")
     for _, name in ipairs({ "get_dir", "set_dir", "fetch_po", "section_html", "section_blocks",
-                            "section_blocks_tagged", "book_metrics", "get_book_ref",
+                            "section_blocks_tagged", "book_metrics", "moon_book_metrics",
+                            "position_from_po", "get_book_ref",
                             "learn_book_ref", "request", "backup_po", "import_from_moon",
                             "_do_push", "build_push_job", "auto_push",
                             "auto_enabled", "set_auto", "local_position", "describe_direction",
@@ -249,6 +252,38 @@ do
     local m2, cached2 = MS.book_metrics("fake.epub")
     eq("第二次走缓存", cached2, true)
     eq("缓存值一致", m2.total, 21)
+end
+
+print("== Moon+ spine 坐标转整书 Unicode 字符坐标 ==")
+do
+    local all, cached = MS.moon_book_metrics("fake.epub")
+    check("原始 spine 统计得出", all ~= nil)
+    eq("保留非 HTML spine 槽位", all and all.item_count, 3)
+    eq("非正文 spine 项不增加字符数", all and all.starts[2], 13)
+    eq("非正文项后下一正文的起点", all and all.starts[3], 13)
+    eq("末尾哨兵 = 总正文字符", all and all.starts[4], 21)
+    eq("整书字符总数", all and all.total, 21)
+    eq("首次是现算的", cached, false)
+
+    local all_cached, cached_again = MS.moon_book_metrics("fake.epub")
+    eq("字符坐标第二次走缓存", cached_again, true)
+    eq("缓存 spine 数一致", all_cached and all_cached.item_count, 3)
+
+    local pos, err = MS.position_from_po("fake.epub", { star = 2, hash = 2, pct = 71.4 })
+    check("章节内坐标可换算", pos ~= nil, err)
+    eq("全书字符坐标 = 前章 13 + 章内 2", pos and pos.character_offset, 15)
+    eq("总正文字符数", pos and pos.total, 21)
+    check("字符比例只作粗校验/展示", pos and math.abs(pos.character_percent - 15 / 21) < 0.000001)
+    eq("锚点来自正确正文项", pos and pos.snippet, "丙丁戊己庚辛")
+
+    local bad, bad_err = MS.position_from_po("fake.epub", { star = 2, hash = 8, pct = 71.4 })
+    eq("章内偏移越界时拒绝", bad, nil)
+    check("越界原因明确", type(bad_err) == "string" and bad_err:find("超出", 1, true) ~= nil)
+
+    local mismatch, mismatch_err = MS.position_from_po("fake.epub", { star = 2, hash = 2, pct = 80 })
+    eq("全书字符比例严重不符时拒绝", mismatch, nil)
+    check("粗校验原因明确", type(mismatch_err) == "string"
+        and mismatch_err:find("差异过大", 1, true) ~= nil)
 end
 
 -- ── HTTP 请求构造 ──────────────────────────────────────────────────────────
@@ -670,8 +705,7 @@ do
 end
 
 -- ── 导入交给跳转流程的那份记录 ─────────────────────────────────────────────
--- 静读天下这条路**也要**享受与 KO 记录同样的跳转链路(首行文字 + 落点如实报差),
--- 而且它自己多一个硬锚点:章序号(star + 1 = DocFragment 序号,项目已真机验证)。
+-- 静读天下先换算整书 Unicode 字符坐标，再以唯一正文命中确认跳转；不映射 DocFragment。
 -- 这里把 import_from_moon 交给 confirm_jump 的记录原样截下来检查。
 print("== import_from_moon 交给 confirm_jump 的记录 ==")
 do
@@ -689,7 +723,7 @@ do
         end
     end
 
-    http_reply = fake_http(200, "1785683827794*0@0#2:62%")
+    http_reply = fake_http(200, "1785683827794*2@0#2:71.4%")
     list_folder_reply = { ok = true, items = {} }
     local plugin = {
         server = { type = "webdav", address = "https://dav.jianguoyun.com/dav",
@@ -697,9 +731,7 @@ do
         ui = { document = { file = "fake.epub",
                             getXPointer = function() return nil end } },
     }
-    -- 本用例只验证"交给跳转流程的那份记录":fake.epub 的章节太短(块内凑不满
-    -- 6 个字,snippet_in_blocks 会如实返回 nil),所以把截片段这一步桩掉 ——
-    -- 片段截取本身有 moon_spec 盯着。
+    -- 检查统一坐标换算后的跳转参数；正文锚点提取由上方假归档用例覆盖。
     local REAL_SNIPPET = Moon.snippet_in_blocks
     Moon.snippet_in_blocks = function() return "顾慎为很清楚这些刀客的热情能持续多久" end
 
@@ -710,10 +742,12 @@ do
     check("导入流程不炸", ok, err)
     check("走到了跳转一步", got_remote ~= nil)
     eq("带首行文字锚点", type(got_remote and got_remote.text_anchor), "string")
-    eq("章节序号 = star + 1", got_remote and got_remote.fragment, 1)
-    eq("内容比例原样带", got_remote and got_remote.pos_percent, 0.62)
-    check("不带 percent(那是页数比例,传了会跳错位置)",
-        got_remote and got_remote.percent == nil)
+    eq("不把 Moon+ 章节映射成 KOReader fragment", got_remote and got_remote.fragment, nil)
+    eq("启用全书唯一命中校验", got_remote and got_remote.require_unique_text, true)
+    check("只附整书字符比例供展示", got_remote
+        and math.abs(got_remote.character_percent - 15 / 21) < 0.000001)
+    check("不传章节/页数比例参与消歧或兜底", got_remote
+        and got_remote.pos_percent == nil and got_remote.percent == nil)
     check("没被自动确认(菜单路径要弹确认框)",
         not (got_opts and got_opts.already_confirmed))
 end

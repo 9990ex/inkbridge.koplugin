@@ -60,6 +60,11 @@ local ERROR_TEXT = {
     ["no_record"]                    = "远端记录格式不正确",
     ["no_position"]                  = "记录里没有任何位置信息",
     ["no_page_count"]                = "无法获知本书的页数",
+    ["moon_anchor_missing"]          = "没有可用于核对的静读天下正文片段",
+    ["moon_anchor_search_failed"]    = "本机全文搜索未能完成",
+    ["moon_anchor_not_found"]        = "正文片段在本书中未找到，为避免错跳已停止",
+    ["moon_anchor_ambiguous"]        = "正文片段在本书中重复出现，无法唯一确认，为避免错跳已停止",
+    ["moon_anchor_invalid"]          = "全文搜索没有返回可用的位置，为避免错跳已停止",
 }
 
 -- HTTP 状态码的常见含义，直接写给用户看，省得他们去查
@@ -802,9 +807,8 @@ end
 -- 前两种在**分页模式**下还会带上落点信息（滚动模式跳过核算，见 _with_landing）：
 --   page / page_top / line_number / first_line_same
 -- xpointer_mismatch 表示「远端 xpointer 在本机解析成功但指的别处，已改用首行文字」。
--- remote.fragment（可选，静读天下记录会给）：远端所在的 DocFragment 序号。
---   文本锚点重复命中时，只在本章内的命中里做比例消歧（章是硬边界）；
---   章内没有命中再退回全体 —— 过滤只改进挑选，不制造新的失败。
+-- remote.require_unique_text：静读天下导入使用。必须全书唯一命中；不以章节映射或
+--   百分比猜测重复命中的位置，无法确认时停止。
 function WebDAV._plan_jump(plugin, remote)
     local ui = plugin and plugin.ui
     if not ui or not ui.document then return nil, "no_document" end
@@ -836,10 +840,10 @@ function WebDAV._plan_jump(plugin, remote)
             end
         end
 
-        -- 2) 文本锚点：全文搜索，命中里挑最接近 pos_percent 的一个
-        --    （锚点可能重复，例如“他说。”这类短句，必须用内容比例消歧；
-        --      有章节信息时先只在那一章里挑，见 remote.fragment 的说明）
+        -- 2) 文本锚点：全文搜索。普通同步记录可用内容高度比例消歧；
+        --    静读天下导入则要求唯一命中，不允许章节或比例代替原文核对。
         local anchor = remote.text_anchor
+        local search_ok, hits
         if type(anchor) == "string" and anchor ~= ""
                 and type(doc.findAllText) == "function" then
             -- 全文搜索跑在 UI 线程上，大书可能要一两秒，期间界面是冻住的。
@@ -851,69 +855,77 @@ function WebDAV._plan_jump(plugin, remote)
             if can_ignore_input then
                 pcall(Device.setIgnoreInput, Device, true)
             end
-            local ok, hits = pcall(doc.findAllText, doc, anchor, true, 0, 8, false)
+            search_ok, hits = pcall(doc.findAllText, doc, anchor, true, 0, 8, false)
             if can_ignore_input then
                 pcall(Device.setIgnoreInput, Device, false)
             end
-            if ok and type(hits) == "table" and #hits > 0 then
-                local height = doc.info and tonumber(doc.info.doc_height) or nil
-                local ratio = tonumber(remote.pos_percent)
-                local expected
-                if ratio and height and height > 0
-                        and type(doc.getPosFromXPointer) == "function" then
-                    expected = math.max(0, math.min(1, ratio)) * height
-                end
-                local pick, pick_dist
-                local function consider(hit)
-                    if not expected then pick = hit; return end
-                    local ok_pos, pos = pcall(doc.getPosFromXPointer, doc, hit.start)
-                    if ok_pos and tonumber(pos) then
-                        local dist = math.abs(tonumber(pos) - expected)
-                        if not pick_dist or dist < pick_dist then
-                            pick, pick_dist = hit, dist
-                        end
-                    elseif not pick then
-                        pick = hit
-                    end
-                end
-                -- 第一轮：只在期望章节内挑。静读天下的 star 与 KOReader 的
-                -- DocFragment 序号差 1（项目已真机验证的等价关系，见 inkbridge_moon.lua），
-                -- 所以 fragment = star + 1。跨章的重复文字是「软判据选错章」的元凶，
-                -- 章是硬边界，先按章收窄。
-                local expected_fragment = tonumber(remote.fragment)
-                if expected_fragment then
-                    for i = 1, #hits do
-                        local hit = hits[i]
-                        if type(hit) == "table" and type(hit.start) == "string" then
-                            local frag = tonumber(hit.start:match("/DocFragment%[(%d+)%]"))
-                            if frag == nil or frag == expected_fragment then
-                                consider(hit)
-                            end
-                        end
-                    end
-                end
-                -- 第二轮：章内没挑到（或不带章节信息）再退回全体 —— 保持旧行为，
-                -- 不让这道过滤制造新的失败（章节口径对不上的书上仍能按比例消歧）。
-                if not pick then
-                    for i = 1, #hits do
-                        local hit = hits[i]
-                        if type(hit) == "table" and type(hit.start) == "string" then
-                            if not expected then pick = hit; break end
-                            consider(hit)
-                        end
-                    end
-                end
-                -- findAllText 会顺带把命中高亮出来，用完清掉
+        end
+
+        if remote.require_unique_text then
+            if type(anchor) ~= "string" or anchor == "" then
+                return nil, "moon_anchor_missing"
+            end
+            if type(doc.findAllText) ~= "function" or not search_ok
+                    or type(hits) ~= "table" then
                 if type(doc.clearSelection) == "function" then
                     pcall(doc.clearSelection, doc)
                 end
-                if pick then
-                    local plan = WebDAV._with_landing(doc,
-                        { method = "text", xpointer = pick.start, hits = #hits },
-                        scroll_mode)
-                    if xpointer_mismatch then plan.xpointer_mismatch = true end
-                    return plan
+                return nil, "moon_anchor_search_failed"
+            end
+            if type(doc.clearSelection) == "function" then
+                pcall(doc.clearSelection, doc)
+            end
+            if #hits == 0 then return nil, "moon_anchor_not_found" end
+            if #hits ~= 1 then return nil, "moon_anchor_ambiguous" end
+            local hit = hits[1]
+            if type(hit) ~= "table" or type(hit.start) ~= "string" or hit.start == "" then
+                return nil, "moon_anchor_invalid"
+            end
+            local plan = WebDAV._with_landing(doc,
+                { method = "text", xpointer = hit.start, hits = 1, unique_text = true },
+                scroll_mode)
+            if xpointer_mismatch then plan.xpointer_mismatch = true end
+            return plan
+        end
+
+        if search_ok and type(hits) == "table" and #hits > 0 then
+            local height = doc.info and tonumber(doc.info.doc_height) or nil
+            local ratio = tonumber(remote.pos_percent)
+            local expected
+            if ratio and height and height > 0
+                    and type(doc.getPosFromXPointer) == "function" then
+                expected = math.max(0, math.min(1, ratio)) * height
+            end
+            local pick, pick_dist
+            local function consider(hit)
+                if not expected then pick = hit; return end
+                local ok_pos, pos = pcall(doc.getPosFromXPointer, doc, hit.start)
+                if ok_pos and tonumber(pos) then
+                    local dist = math.abs(tonumber(pos) - expected)
+                    if not pick_dist or dist < pick_dist then
+                        pick, pick_dist = hit, dist
+                    end
+                elseif not pick then
+                    pick = hit
                 end
+            end
+            for i = 1, #hits do
+                local hit = hits[i]
+                if type(hit) == "table" and type(hit.start) == "string" then
+                    if not expected then pick = hit; break end
+                    consider(hit)
+                end
+            end
+            -- findAllText 会顺带把命中高亮出来，用完清掉
+            if type(doc.clearSelection) == "function" then
+                pcall(doc.clearSelection, doc)
+            end
+            if pick then
+                local plan = WebDAV._with_landing(doc,
+                    { method = "text", xpointer = pick.start, hits = #hits },
+                    scroll_mode)
+                if xpointer_mismatch then plan.xpointer_mismatch = true end
+                return plan
             end
         end
     end
@@ -988,8 +1000,8 @@ function WebDAV.confirm_jump(plugin, remote, opts)
     if not shown_pct then
         -- 静读天下那条路进来的是 pos_percent(内容比例,≈62%),没有 percent(页数比例)。
         -- 以前这里只读 percent,于是永远显示「0.00%」—— 实测踩到。
-        shown_pct = tonumber(remote.pos_percent)
-        table.insert(notes, "内容比例")
+        shown_pct = tonumber(remote.character_percent) or tonumber(remote.pos_percent)
+        table.insert(notes, remote.character_percent and "正文字符比例" or "内容比例")
     end
     if type(remote.dir_note) == "string" and remote.dir_note ~= "" then
         table.insert(notes, remote.dir_note)

@@ -2,15 +2,15 @@
 --
 -- 静读天下把每本书的进度写在云端 `<书名>.epub.po`(单行纯文本)。
 -- 格式与实测解码见 墨桥-samples/po-findings.md:
---   `*` 章节序号(0 基,= KOReader 的 DocFragment 序号 − 1)—— 决定位置
+--   `*` 章节序号(0 基,对应原 EPUB spine itemref)—— Moon+ 的源坐标,不映射成 KOReader DocFragment
 --   `#` 该章节内的字符偏移                                —— 决定位置
---   `:%`/首个常量/`@` 与定位无关,只读不改。
+--   `:%` 只作整书字符比例粗校验;首个常量/`@` 与定位无关,只读不改。
 --
 -- 本模块负责:
 --   1) 按**用户指定**的目录取回当前书的 .po(**只读**,绝不改动静读天下的文件);
---   2) 解析出 (章节序号, 章内字符偏移);
---   3) 用 ffi/archiver 打开本机 EPUB,取出该章节正文;
---   4) 从正文里截一小段文字当锚点,交给已有的跳转流程 WebDAV.confirm_jump。
+--   2) 解析出 Moon+ EPUB spine 序号与章内字符偏移;
+--   3) 累加前置可读正文,换成整本 Unicode 字符坐标,并按字符坐标取正文锚点;
+--   4) KOReader 全文唯一命中后才交给 WebDAV.confirm_jump,不使用 DocFragment 对照。
 --
 -- 为什么自己发 GET 而不用云端 provider:
 --   provider 的 downloadFile 本身也是直连 GET(providers/webdav.lua:142),
@@ -34,7 +34,8 @@ local Moonsync = {}
 
 -- 默认目录仅作占位提示;实际以用户设置为准(见 设置 → 静读天下同步目录)。
 Moonsync.DEFAULT_DIR = "Apps/Books/.Moon+/Cache"
-Moonsync.SNIPPET_LEN = 20
+Moonsync.SNIPPET_LEN = 48
+Moonsync.PCT_TOLERANCE = 3
 Moonsync.DIR_SETTING = "inkbridge_moon_dir"
 
 -- ── 兼容平台 ──────────────────────────────────────────────────────────────
@@ -366,7 +367,7 @@ local function spine_of(arc)
     end
     local spine = #spine_html > 0 and spine_html or spine_all
     local base = opf_key:match("^(.*)/[^/]*$")
-    return spine, (base and base ~= "") and base or "", nil
+    return spine, (base and base ~= "") and base or "", nil, spine_all
 end
 
 -- 打开归档读某个条目;rar/zip 内部的路径可能是 "OEBPS/Text/x.xhtml" 也可能已是完整路径。
@@ -474,6 +475,135 @@ function Moonsync.book_metrics(epub_path)
     return metrics, false
 end
 
+-- 静读天下的 *N 按 EPUB 原始 spine itemref 编号；与 book_metrics 的 HTML-only
+-- 列表分开保存，避免封面/非 HTML spine 项导致章节索引漂移。非正文资源计 0 字，
+-- 但保留槽位；只有可读 HTML 正文加入 Unicode 字符累计。
+function Moonsync.moon_book_metrics(epub_path)
+    local stamp = ""
+    local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
+    if ok_lfs and lfs and type(lfs.attributes) == "function" then
+        local ok_a, attr = pcall(lfs.attributes, epub_path)
+        if ok_a and type(attr) == "table" then
+            stamp = string.format("|%s|%s", tostring(attr.size), tostring(attr.modification))
+        end
+    end
+    local cache_key = "inkbridge_moon_coordinate_metrics:" .. tostring(epub_path) .. stamp
+    if G_reader_settings then
+        local cached = G_reader_settings:readSetting(cache_key)
+        if type(cached) == "table" and type(cached.total) == "number"
+                and type(cached.starts) == "table" and type(cached.html_to_item) == "table"
+                and type(cached.item_count) == "number" and cached.total > 0 then
+            return cached, true
+        end
+    end
+
+    local ok_req, Archiver = pcall(require, "ffi/archiver")
+    if not ok_req or type(Archiver) ~= "table" or not Archiver.Reader then return nil end
+    local arc = Archiver.Reader:new()
+    local ok_open, opened = pcall(function() return arc:open(epub_path) end)
+    if not ok_open or not opened then return nil end
+    local function close() pcall(function() arc:close() end) end
+
+    local _, base, err, spine_all = spine_of(arc)
+    if not spine_all then close(); return nil, err end
+
+    local starts, html_to_item, total = {}, {}, 0
+    local html_index = 0
+    for i = 1, #spine_all do
+        starts[i] = total
+        local href = spine_all[i]
+        if Moon.is_html_href(href) then
+            html_index = html_index + 1
+            html_to_item[html_index] = i
+            local key = (base ~= "") and (base .. "/" .. href) or href
+            local html = extract_any(arc, key, href)
+            if type(html) == "string" then
+                local blocks = Moon.blocks_from_html(html)
+                for j = 1, #blocks do total = total + Moon.utf8_len(blocks[j]) end
+            end
+        end
+    end
+    starts[#spine_all + 1] = total
+    close()
+    if total <= 0 then return nil, "全书字数为 0，读不出正文" end
+
+    local metrics = {
+        total = total,
+        starts = starts,
+        html_to_item = html_to_item,
+        item_count = #spine_all,
+    }
+    if G_reader_settings then G_reader_settings:saveSetting(cache_key, metrics) end
+    return metrics, false
+end
+
+-- 把 Moon+ 的 (spine 序号, 章内字符偏移) 换成整本书正文字符坐标，
+-- 再按该坐标提取原文锚点。spine 只用于解释 .po 的源坐标；不会映射成
+-- KOReader 的 DocFragment，也不会用章节号筛 KOReader 的全文搜索结果。
+-- 返回 { character_offset, total, character_percent, snippet } 或 nil + 原因。
+function Moonsync.position_from_po(epub_path, po)
+    if type(po) ~= "table" then return nil, "进度记录无效" end
+    local star, hash = tonumber(po.star), tonumber(po.hash)
+    if not star or star < 0 or star ~= math.floor(star)
+            or not hash or hash < 0 or hash ~= math.floor(hash) then
+        return nil, "静读天下的章节或字符偏移无效"
+    end
+
+    local metrics, merr = Moonsync.moon_book_metrics(epub_path)
+    if not metrics then return nil, merr or "无法统计本书正文字符" end
+    local section_count = metrics.item_count
+    if star >= section_count then
+        return nil, string.format("静读天下章节序号 %d 超出本书范围（共 %d 个内容单元）",
+                                  star, section_count)
+    end
+
+    local start_at, end_at = metrics.starts[star + 1], metrics.starts[star + 2]
+    local section_chars = end_at - start_at
+    if hash >= section_chars then
+        return nil, string.format("章内字符偏移 %d 超出对应内容单元长度 %d", hash, section_chars)
+    end
+
+    local character_offset = start_at + hash
+    local character_percent = character_offset / metrics.total
+    local po_pct = tonumber(po.pct)
+    if po_pct and math.abs(character_percent * 100 - po_pct) > Moonsync.PCT_TOLERANCE then
+        return nil, string.format(
+            "静读天下百分比与本书字符坐标差异过大（记录 %.1f%%，正文约 %.1f%%）",
+            po_pct, character_percent * 100)
+    end
+
+    -- 以累计字符坐标反查源 EPUB 内容单元，再从同一套紧凑正文字符中取锚点。
+    -- 空内容项会有相同的 starts，严格使用半开区间跳过它们。
+    local target_index
+    for i = 1, section_count do
+        if character_offset >= metrics.starts[i]
+                and character_offset < metrics.starts[i + 1] then
+            target_index = i
+            break
+        end
+    end
+    if not target_index then return nil, "整书字符坐标无法对应到正文" end
+
+    local html_index = metrics.html_to_item
+    local html_section
+    for i = 1, #html_index do
+        if html_index[i] == target_index then html_section = i - 1; break end
+    end
+    if html_section == nil then return nil, "目标字符所在 spine 项没有可读正文" end
+    local blocks, berr = Moonsync.section_blocks(epub_path, html_section)
+    if not blocks then return nil, berr or "读不出目标正文" end
+    local offset_in_section = character_offset - metrics.starts[target_index]
+    local snippet = Moon.snippet_in_blocks(blocks, offset_in_section, Moonsync.SNIPPET_LEN)
+    if not snippet then return nil, "目标字符附近没有足够的正文可供核对" end
+
+    return {
+        character_offset = character_offset,
+        total = metrics.total,
+        character_percent = character_percent,
+        snippet = snippet,
+    }
+end
+
 -- 本机当前位置的 (章节序号 0 基, 章内字符偏移)。算不出返回 nil。
 -- 用途只有一个:给导入确认框加一句"远端比本机更早/更晚"的方向提示。
 -- 它**不参与定位** —— 算不出来也不该挡住导入,所以这里失败一律返回 nil 而不是报错。
@@ -553,46 +683,20 @@ function Moonsync.import_from_moon(plugin, opts)
     end
 
     local doc = plugin.ui.document
-    local blocks, berr = Moonsync.section_blocks(doc.file, po.star)
-    if not blocks then
-        show("墨桥：读不出这本书的对应章节（" .. tostring(berr) .. "）。")
+    local location, lerr = Moonsync.position_from_po(doc.file, po)
+    if not location then
+        show("墨桥：静读天下的位置无法可靠还原（" .. tostring(lerr) .. "）。")
         return
     end
 
-    -- 片段必须落在同一段内 —— 渲染出来的正文在段与段之间是断开的,
-    -- 跨段片段全文搜索永远搜不到(这正是上一版掉进百分比兜底的原因)。
-    local snippet = Moon.snippet_in_blocks(blocks, po.hash, Moonsync.SNIPPET_LEN)
-    if not snippet then
-        show(string.format(
-            "墨桥：静读天下的位置在本机定位不到（章内偏移 %d，本章共 %d 段）。",
-            po.hash, #blocks))
-        return
-    end
-
-    -- 复用已有机制:文本锚点 + 内容比例消歧 + 询问用户 + 展示定位方式。
-    --
-    -- **不要**传 percent:静读天下的 `:%` 是"内容比例",而 percent 在跳转里被当成
-    -- "页数比例"去换算页码 —— 直接传会落到完全不同的位置(实测踩过这个坑)。
-    -- 内容比例只用于搜索命中时的消歧(pos_percent);搜索不命中就如实报错,
-    -- 不碰任何兜底,免得"跳到一个错误的位置"比"报错"更糟。
-    --
-    -- fragment 传 **章序号 + 1**:静读天下的 star 是 0 基章序号,与 KOReader 的
-    -- DocFragment 序号恰好差 1(项目已真机验证,见 inkbridge_moon.lua)。锚点文字
-    -- 在别处重复时,`_plan_jump` 会先只在**本章**的命中里做比例消歧 ——
-    -- 章是硬边界,跨章命中几乎必然是重复文字(2026-10-08 自查加上)。
-    -- 方向提示:先算出本机位置,再和远端的 (*章序号, #章内偏移) 比一比。
-    -- 只是给确认框加一句话,算不出来就不加,绝不挡住导入。
-    local local_pos = Moonsync.local_position(plugin)
-    local dir_note  = local_pos and Moonsync.describe_direction(
-        { section = po.star, hash = po.hash }, local_pos) or nil
-
+    -- 章节和章内偏移只负责还原 Moon+ 原文中的整书字符坐标。
+    -- KOReader 侧必须全文唯一命中；章节映射和百分比都不得替代正文验证。
     local ok_jump, jerr = pcall(function()
         WebDAV.confirm_jump(plugin, {
-            text_anchor  = snippet,
-            pos_percent  = po.pct / 100,
-            fragment     = po.star + 1,
-            device_label = "静读天下",
-            dir_note     = dir_note,
+            text_anchor       = location.snippet,
+            character_percent = location.character_percent,
+            require_unique_text = true,
+            device_label      = "静读天下",
         }, { already_confirmed = opts and opts.already_confirmed })
     end)
     if not ok_jump then
