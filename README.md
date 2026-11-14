@@ -1,8 +1,8 @@
-# 墨桥 InkBridge
+# InkBridge+ / 墨桥+
 
 面向 KOReader 的跨平台阅读进度同步项目。
 
-InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，让阅读位置可以在 Kindle、Android、汉王等设备之间可靠地往返同步。
+InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界面连接不同平台的 KOReader 设备，让阅读位置可以在 Kindle、Android、汉王等设备之间可靠地往返同步。
 
 ## 第一阶段目标
 
@@ -33,7 +33,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ## 当前状态
 
-**本地版本为 0.3.7-alpha**，可在本机 `releases/` 目录取得安装包。
+**当前开发版本为 0.3.8-alpha**。它以 InkBridge 0.3.7-alpha 为功能与安全基线，新增轻量同步状态页；安装包只在完整回归校验通过后由项目打包器生成。
 0.3.0 是正式版基线；之后的小改动继续走 **`0.3.x-alpha`**（0.3.1-alpha、0.3.2-alpha…），
 不跳大版本号。
 此前版本的上传、下载与跨设备跳转已在 Android 与 Kindle 设备上实测通过，
@@ -51,7 +51,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
    - Kobo：`.adds/koreader/plugins/`
    - Kindle：`koreader/plugins/`
    - Android：`/sdcard/koreader/plugins/`
-4. 完整重启 KOReader，在工具菜单打开「墨桥 InkBridge」。
+4. 完整重启 KOReader，在工具菜单打开「InkBridge+ / 墨桥+」。
 
 首次使用先配云同步：**高级选项 → 存储选项 → 墨桥同步目录**
 （只配了一台服务器时会直接进目录浏览），并在里面**长按**「Long-press here to choose current folder」
@@ -62,7 +62,7 @@ InkBridge（墨桥）希望把不同平台上的 KOReader 设备连接起来，�
 
 ### 参与开发
 
-见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（923 条断言，不需要设备）、
+见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（933 条断言，不需要设备）、
 进度记录的定位原理，以及已知问题清单。
 
 ## 设计原则
@@ -82,18 +82,18 @@ InkBridge 是独立项目，与 Syncery 没有官方隶属关系。早期设计�
 ## 开发方式
 
 **Powered by DeepSeek** —— 本项目的代码、回归测试与文档均在 DeepSeek 的辅助下完成。
-所有改动都要跑过 923 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
+所有改动都要跑过 933 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
 关键链路由真机验证。
 
 > DeepSeek 在这里是开发工具。本项目与 DeepSeek 官方没有任何隶属关系。
 
 ## 名称
 
-**InkBridge / 墨桥**：连接不同阅读设备，也连接不同阅读软件之间的阅读进度。
+**InkBridge+ / 墨桥+**：连接不同阅读设备，也连接不同阅读软件之间的阅读进度。
 
 ## 许可证
 
 本项目以 [GNU General Public License v3.0](LICENSE) 授权。
 
-> 说明：InkBridge 是 KOReader 的插件，运行时会 `require` KOReader 自身的模块；
+> 说明：InkBridge+ 是 KOReader 的插件，运行时会 `require` KOReader 自身的模块；
 > KOReader 本体以 AGPL-3.0 发布。

@@ -31,6 +31,32 @@ local function show(text)
     UIManager:show(InfoMessage:new{ text = text, timeout = 4 })
 end
 
+-- 状态页只需让用户认出同步目标。KOReader 通常把凭据拆开存，但仍防御性地
+-- 去掉地址中可能出现的 user:password@ 前缀，避免纯展示页泄露凭据。
+local function display_webdav_target(server)
+    local name = server and server.name
+    if type(name) == "string" and name ~= "" then return name end
+
+    local address = type(server and server.address) == "string" and server.address or ""
+    local scheme = address:find("://", 1, true)
+    if scheme then
+        local authority_start = scheme + 3
+        local slash = address:find("/", authority_start, true)
+        local authority_end = slash and slash - 1 or #address
+        local at, search_start = nil, authority_start
+        while true do
+            local next_at = address:find("@", search_start, true)
+            if not next_at or next_at > authority_end then break end
+            at = next_at
+            search_start = next_at + 1
+        end
+        if at then
+            address = address:sub(1, authority_start - 1) .. address:sub(at + 1)
+        end
+    end
+    return address ~= "" and address or "已设置 WebDAV 目标"
+end
+
 -- 文件名片段清洗：替换掉文件系统不接受的字符，并做长度限制。
 -- 长度必须**按字符**截断：按字节截断会把一个汉字劈成半个，
 -- 生成非法 UTF-8 文件名（State._utf8_sub 是为此写的）。
@@ -473,6 +499,62 @@ function InkBridge:_has_server()
     return type(s) == "table" and s.type ~= nil
 end
 
+-- 状态页不需要书籍哈希或设备身份：它们只在实际同步时才有用。避开 _book_context()
+-- 既避免一次可能较慢的 partialMD5，也确保这个只读入口不会创建同步上下文。
+function InkBridge:_status_book_context()
+    return State.read_position(self.ui)
+end
+
+-- 轻量同步状态页只读取现有状态：不联网、不写设置，也不触发上传或下载。
+-- 入口放在一级菜单，用户在同步前能先确认目标、当前书和兼容平台有没有配对。
+function InkBridge:_sync_status_rows()
+    local rows = {}
+    local server = self.server
+    if type(server) == "table" and server.type == "webdav" then
+        rows[#rows + 1] = { "云端目标", display_webdav_target(server) }
+        rows[#rows + 1] = { "墨桥目录", tostring(server.url or "/") }
+    else
+        rows[#rows + 1] = { "云端目标", "尚未设置" }
+    end
+
+    local entry = self:_status_book_context()
+    if entry then
+        rows[#rows + 1] = { "当前书籍", tostring(entry.book_name or "未知书名") }
+        local percent = tonumber(entry.percent)
+        local position = percent and string.format("%.2f%%", percent * 100) or "无法读取"
+        if entry.page and entry.total_pages then
+            position = position .. string.format("（第 %s / %s 页）", tostring(entry.page), tostring(entry.total_pages))
+        end
+        rows[#rows + 1] = { "本地位置", position }
+    else
+        rows[#rows + 1] = { "当前书籍", "未打开可同步书籍" }
+    end
+
+    local platform = Moonsync.get_platform()
+    rows[#rows + 1] = { "兼容平台", tostring(platform.name or "未设置") }
+    rows[#rows + 1] = { "平台目录", Moonsync.get_dir() }
+    return rows
+end
+
+function InkBridge:show_sync_status()
+    local rows = self:_sync_status_rows()
+    local ok, KeyValuePage = pcall(require, "ui/widget/keyvaluepage")
+    if ok and type(KeyValuePage) == "table" and type(KeyValuePage.new) == "function" then
+        UIManager:show(KeyValuePage:new{
+            title = "InkBridge+ · 同步状态",
+            kv_pairs = rows,
+        })
+        return
+    end
+
+    -- 极老 KOReader 没有 KeyValuePage 时保留可读的纯文本退路。
+    local lines = { "InkBridge+ · 同步状态" }
+    for _, row in ipairs(rows) do
+        lines[#lines + 1] = tostring(row[1]) .. "：" .. tostring(row[2])
+    end
+    show(table.concat(lines, "\n"))
+end
+
 -- 存储选项(A 方案):**只有一个后端时不制造"假选择"**,直接把它的子项摊开。
 -- 以后真加了第二个后端(比如 Syncthing),这里自然长成
 --   存储选项 → WebDAV / Syncthing → 各自的目录
@@ -823,7 +905,7 @@ end
 -- KOReader 调用这个方法，把插件菜单加入工具菜单。
 function InkBridge:addToMainMenu(menu_items)
     menu_items.inkbridge = {
-        text = "墨桥 InkBridge v" .. tostring(Meta.version or "unknown"),
+        text = "InkBridge+ v" .. tostring(Meta.version or "unknown"),
         sorting_hint = "tools",
         -- KOReader 的主菜单使用 sub_item_table_func 动态生成子菜单。
         -- 动态函数比直接写 sub_item_table 更兼容不同 KOReader 版本，
@@ -840,6 +922,9 @@ function InkBridge:addToMainMenu(menu_items)
                 })
             end
 
+            table.insert(items, { text = "同步状态",
+                                  help_text = "查看当前书、本地位置和同步目标，不联网不写入",
+                                  callback = function() self:show_sync_status() end })
             table.insert(items, { text = "上传阅读进度",
                                   callback = function() self:upload_current() end })
             table.insert(items, { text = "下载阅读进度",

@@ -6,7 +6,7 @@
 -- 以后真要国际化，正统做法是 require("gettext") + 英文源串，
 -- 这样才能直接复用 KOReader 自带的几十种语言翻译。
 return {
-    fullname = "InkBridge / 墨桥",
-    description = "通过 WebDAV 在 KOReader 与静读天下之间同步阅读位置的插件",
-    version = "0.3.7-alpha",
+    fullname = "InkBridge+ / 墨桥+",
+    description = "轻量阅读进度同步工具，兼容 InkBridge 与静读天下",
+    version = "0.3.8-alpha",
 }

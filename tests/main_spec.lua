@@ -15,6 +15,7 @@ local shown       = {}   -- UIManager:show 收到的内容
 local wifi_prompt = nil  -- 未联网时 promptWifiOn 注册的回调
 local connected   = true
 local confirm_cb  = nil  -- ConfirmBox:new 收到的 ok_callback
+local last_keyvalue = nil
 
 package.preload["ui/widget/container/widgetcontainer"] = function()
     local Widget = {}
@@ -34,6 +35,9 @@ package.preload["ui/uimanager"] = function()
     }
 end
 package.preload["ui/widget/infomessage"] = function() return { new = function(_, o) return o or {} end } end
+package.preload["ui/widget/keyvaluepage"] = function()
+    return { new = function(_, o) last_keyvalue = o; return o or {} end }
+end
 package.preload["ui/widget/inputdialog"] = function() return { new = function(_, o) return o or {} end } end
 package.preload["ui/widget/buttondialog"] = function() return { new = function(_, o) return o or {} end } end
 package.preload["ui/widget/confirmbox"]  = function()
@@ -89,6 +93,18 @@ end
 local function contains(label, haystack, needle)
     check(label, type(haystack) == "string" and haystack:find(needle, 1, true) ~= nil,
         string.format("[%s] 中找不到 [%s]", tostring(haystack), tostring(needle)))
+end
+
+local function row_value(rows, label)
+    for _, row in ipairs(rows or {}) do
+        if row[1] == label then return row[2] end
+    end
+end
+
+local function item_index(items, text)
+    for i, item in ipairs(items or {}) do
+        if item.text == text then return i end
+    end
 end
 
 local function new_plugin(overrides)
@@ -286,7 +302,49 @@ do
 end
 
 -- ============================================================================
-print("== 6. 下载临时文件路径 ==")
+print("== 6. 轻量同步状态页 ==")
+-- ============================================================================
+do
+    local plugin = new_plugin({
+        server = {
+            type = "webdav",
+            address = "https://secret-user:secret-password@dav.example.com/dav",
+            username = "secret-user",
+            password = "secret-password",
+            url = "/books",
+        },
+    })
+    plugin._status_book_context = function()
+        return { book_name = "测试书", percent = 0.47, page = 47, total_pages = 100 }
+    end
+    local rows = plugin:_sync_status_rows()
+    eq("状态页显示脱敏后的 WebDAV 目标", row_value(rows, "云端目标"), "https://dav.example.com/dav")
+    eq("状态页显示同步目录", row_value(rows, "墨桥目录"), "/books")
+    eq("状态页显示当前书", row_value(rows, "当前书籍"), "测试书")
+    eq("状态页显示本地进度", row_value(rows, "本地位置"), "47.00%（第 47 / 100 页）")
+    check("状态页不泄露用户名", not table.concat({
+        tostring(row_value(rows, "云端目标") or ""), tostring(row_value(rows, "墨桥目录") or ""),
+    }, "\n"):find("secret-user", 1, true))
+    check("状态页不泄露密码", not table.concat({
+        tostring(row_value(rows, "云端目标") or ""), tostring(row_value(rows, "墨桥目录") or ""),
+    }, "\n"):find("secret-password", 1, true))
+
+    last_keyvalue = nil
+    plugin:show_sync_status()
+    eq("使用 KeyValuePage 展示状态", last_keyvalue and last_keyvalue.title, "InkBridge+ · 同步状态")
+    eq("状态页传入相同数据", row_value(last_keyvalue and last_keyvalue.kv_pairs, "当前书籍"), "测试书")
+
+    local menu_items = {}
+    plugin:addToMainMenu(menu_items)
+    local menu = menu_items.inkbridge.sub_item_table_func()
+    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.8-alpha")
+    local status_index = item_index(menu, "同步状态")
+    local upload_index = item_index(menu, "上传阅读进度")
+    check("同步状态排在上传前", status_index and upload_index and status_index < upload_index)
+end
+
+-- ============================================================================
+print("== 7. 下载临时文件路径 ==")
 -- ============================================================================
 -- ① 临时名必须是纯 ASCII：LuaJIT 在 Windows 上通过 ANSI 代码页打开文件，
 -- 含中文的本地路径会直接报 “Illegal byte sequence”。

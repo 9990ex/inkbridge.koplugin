@@ -1,6 +1,6 @@
-# 墨桥 InkBridge — 开发说明
+# InkBridge+ / 墨桥+ — 开发说明
 
-KOReader 插件 InkBridge(墨桥)的开发文档。功能:通过 KOReader 自带的 WebDAV 云存储,
+KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自带的 WebDAV 云存储,
 在不同设备之间手动同步当前阅读位置。
 
 ## 目录结构
@@ -79,7 +79,7 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
 ## 安装到设备
 
 把 `inkbridge.koplugin/` 整个目录放进 KOReader 的 `plugins/` 下,重启 KOReader,
-在工具菜单打开「墨桥 InkBridge」。
+在工具菜单打开「InkBridge+ / 墨桥+」。
 
 首次使用先配云同步:**高级选项 → 存储选项 → 墨桥同步目录**
 (只配了一台服务器时会直接进目录浏览)——**必须长按**「Long-press here to choose current folder」
