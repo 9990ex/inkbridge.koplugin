@@ -88,7 +88,7 @@ function Moon.parse(line)
     }
 end
 
--- 按原格式拼回一行;book_ref 与 at 必须沿用云端原值
+-- 按原格式拼回一行；book_ref 是上传设备来源标识，at 沿用原值。
 function Moon.format(book_ref, star, hash, pct, at)
     at = at or 0
     local pct_s

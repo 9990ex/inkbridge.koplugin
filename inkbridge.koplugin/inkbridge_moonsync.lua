@@ -4,7 +4,7 @@
 -- 格式与实测解码见 墨桥-samples/po-findings.md:
 --   `*` 阅读单元序号(0 基,由 EPUB 导航与 spine 合并建立)—— 不等同 KOReader DocFragment
 --   `#` 该章节内的字符偏移                                —— 决定位置
---   `:%` 只作整书字符比例粗校验;首个常量/`@` 与定位无关,只读不改。
+--   `:%` 只作整书字符比例粗校验；首字段是上传设备标识，写回使用本机来源；`@` 沿用。
 --
 -- 本模块负责:
 --   1) 按**用户指定**的目录取回当前书的 .po(**只读**,绝不改动静读天下的文件);
@@ -902,10 +902,26 @@ end
 --   3) 覆盖前把云端原值备份到本地插件目录;
 --   4) 写完回读校验,确认云端真的是我们写下去的那一行。
 
--- 首个常量是**账号级**的,由静读天下自己写入,我们只能照抄。
--- 先在任意一本书上成功同步/读取一次把它记下来,之后连"静读天下从没打开过的书"也能写。
+-- 历史缓存保留作已有 Moon+ 同步样本的守卫，不能再把它作为写回来源。
+-- 首字段实际是 deviceRandomID：照抄手机标识会被同一手机当作自己上传而忽略。
 Moonsync.REF_SETTING = "inkbridge_moon_book_ref"
+Moonsync.WRITER_SETTING = "inkbridge_moon_writer_ref"
 Moonsync.BACKUP_SUBDIR = "moon_backup"
+
+function Moonsync.get_writer_ref(plugin)
+    local ref = G_reader_settings and G_reader_settings:readSetting(Moonsync.WRITER_SETTING)
+    if type(ref) == "string" and ref:match("^0%d+$") then return ref end
+    local id = plugin and plugin.device_id
+    if type(id) ~= "string" or id == "" then
+        id = G_reader_settings and G_reader_settings:readSetting("inkbridge_device_id")
+    end
+    local digits = type(id) == "string" and id:gsub("%D", "") or ""
+    if digits == "" then digits = tostring(os.time()) .. tostring(math.random(100000, 999999)) end
+    -- Moon+ 按字符串比较来源；0 前缀与其时间戳式 ID 区分，并兼容旧 .po 数字解析器。
+    ref = "0" .. digits
+    if G_reader_settings then G_reader_settings:saveSetting(Moonsync.WRITER_SETTING, ref) end
+    return ref
+end
 
 function Moonsync.get_book_ref()
     if not G_reader_settings then return nil end
@@ -1110,7 +1126,7 @@ function Moonsync.build_txt_push_job(plugin)
     if not model then return nil, merr, "error" end
     local pos, perr = Txt.document_position(model, doc, profile)
     if not pos then return nil, perr, "error" end
-    -- TXT 必须先有 Moon+ 实际生成的同书记录；不借其他书的账号常量创建未知坐标模型。
+    -- TXT 必须先有 Moon+ 实际生成的同书记录；不借其他书的样本创建未知坐标模型。
     local old_body, ferr = Moonsync.fetch_po(plugin)
     local old = old_body and Moon.parse(old_body)
     if not old then return nil, "TXT 写回前无法读取有效原进度（" .. tostring(ferr or "格式无效") .. "）", "error" end
@@ -1120,7 +1136,7 @@ function Moonsync.build_txt_push_job(plugin)
     local filename = Moon.po_filename(doc.file)
     return {
         url = Moon.build_url(plugin.server.address, plugin.server.url, Moonsync.get_dir(), filename),
-        body = Moon.format(old.book_ref, 0, pos.hash, pct, old.at),
+        body = Moon.format(Moonsync.get_writer_ref(plugin), 0, pos.hash, pct, old.at),
         old_body = old_body,
         old_line = old_body:gsub("[\r\n]+$", ""),
         filename = filename,
@@ -1194,12 +1210,12 @@ function Moonsync.build_push_job(plugin)
         end
     end
 
-    -- 云端现有内容:沿用账号级常量与 @,并作为备份来源
+    -- 沿用 @ 并备份原值；仍要求已有同步样本，但写回必须标识为本机而非手机来源。
     local old_body = Moonsync.fetch_po(plugin)
     local old = old_body and Moon.parse(old_body) or nil
     local book_ref = (old and old.book_ref) or Moonsync.get_book_ref()
     if not book_ref then
-        return nil, "云端还没有这本书的进度文件，无法得知账号级常量"
+        return nil, "尚无可核对的静读天下同步样本"
             .. "（请先在静读天下里同步一次任意一本书）", "error"
     end
     Moonsync.learn_book_ref(book_ref)
@@ -1220,7 +1236,7 @@ function Moonsync.build_push_job(plugin)
     local filename = Moon.po_filename(doc.file)
     return {
         url         = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename),
-        body        = Moon.format(book_ref, moon_section, unit_prefix + hash, pct, at),
+        body        = Moon.format(Moonsync.get_writer_ref(plugin), moon_section, unit_prefix + hash, pct, at),
         old_body    = old_body,
         old_line    = old_body and (old_body:gsub("[\r\n]+$", "")) or nil,
         filename    = filename,

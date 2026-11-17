@@ -283,8 +283,8 @@ do
     eq("空串回落到默认", MS.get_dir(), "Apps/Books/.Moon+/Cache")
 end
 
--- ── 账号级常量 ─────────────────────────────────────────────────────────────
-print("== 账号级常量(写回要用,只能从云端学) ==")
+-- ── 旧同步样本缓存与本机上传来源 ───────────────────────────────────────────
+print("== 旧样本缓存（不再作为上传设备来源） ==")
 do
     settings["inkbridge_moon_book_ref"] = nil
     eq("没学过时是 nil", MS.get_book_ref(), nil)
@@ -292,6 +292,29 @@ do
     eq("学到后读得出", MS.get_book_ref(), "1785683827794")
     MS.learn_book_ref("")
     eq("空串不会覆盖已有值", MS.get_book_ref(), "1785683827794")
+end
+
+print("== Moon+ 上传来源必须区别于手机自己的 ID ==")
+do
+    local key = MS.WRITER_SETTING
+    local saved, device = settings[key], settings.inkbridge_device_id
+    settings[key] = nil
+    eq("来源由KO设备标识生成", MS.get_writer_ref({device_id="1234-5678"}), "012345678")
+    eq("来源已持久化", settings[key], "012345678")
+    MS.learn_book_ref("1794642019701")
+    eq("读取手机记录不污染本机来源", MS.get_writer_ref({device_id="different"}), "012345678")
+    check("不冒用手机来源", MS.get_writer_ref() ~= "1794642019701")
+    eq("数字来源仍可解析", Moon.parse(Moon.format(MS.get_writer_ref(),0,1,1,0)).book_ref,"012345678")
+    settings[key] = "1794642019701"
+    eq("非本机格式旧值不沿用", MS.get_writer_ref({device_id="9000-12"}),"0900012")
+    settings[key], settings.inkbridge_device_id = nil, "2222-3333"
+    eq("无plugin标识读取设备设置",MS.get_writer_ref(),"022223333")
+    settings[key], settings.inkbridge_device_id = nil, nil
+    local generated = MS.get_writer_ref()
+    check("无设备名可生成数字来源",type(generated)=="string" and generated:match("^0%d+$") ~= nil)
+    eq("生成后重复使用不变",MS.get_writer_ref(),generated)
+    settings[key], settings.inkbridge_device_id = saved, device
+    MS.learn_book_ref("1785683827794")
 end
 
 -- ── 章节读取(两章假归档) ─────────────────────────────────────────────────
@@ -582,7 +605,7 @@ do
         eq("章内偏移", job.hash, 11)
         eq("自检标记", job.checked, "已通过")
         -- 11 / 21(全书字数) = 52.38%
-        eq("生成的整行", job.body, "1785683827794*0@0#11:52.4%")
+        eq("生成的整行", job.body, MS.get_writer_ref(plugin) .. "*0@0#11:52.4%")
         eq("目标 URL", job.url,
            "https://dav/Books/Apps/Books/.Moon+/Cache/fake.epub.po")
         eq("文件名沿用本机书名", job.filename, "fake.epub.po")
@@ -641,7 +664,7 @@ do
     check("返回一句话结果", type(note) == "string"
           and note:find("已同步给静读天下", 1, true) ~= nil, note)
     eq("静默模式不额外弹窗(结果由上传提示一起显示)", #shown, 0)
-    eq("写下去的确实是刚算出的那一行", last_put, "1785683827794*0@0#11:52.4%")
+    eq("写下去的确实是刚算出的那一行", last_put, MS.get_writer_ref(plugin) .. "*0@0#11:52.4%")
 
     -- 静默 ≠ 吞掉失败:失败必须能从返回值里读到
     -- 注意:这里替换的是**导出的模块函数**,用完必须还原 —— 否则后面所有用例
@@ -1274,7 +1297,8 @@ do
     local job, err = MS.build_push_job(plugin)
     check("TXT写回准备成功", job ~= nil, err)
     eq("TXT写回hash", job and job.hash, expected_hash)
-    eq("TXT写回沿用常量", job and Moon.parse(job.body).book_ref, "123456")
+    eq("TXT写回使用本机来源", job and Moon.parse(job.body).book_ref, MS.get_writer_ref(plugin))
+    check("TXT不冒用原Moon设备", job and Moon.parse(job.body).book_ref ~= "123456")
     eq("TXT写回沿用at", job and Moon.parse(job.body).at, 0)
     eq("TXT写回单元", job and Moon.parse(job.body).star, 0)
     eq("TXT写回比例", job and Moon.parse(job.body).pct, tonumber(string.format("%.1f",expected_hash/total*100)))
