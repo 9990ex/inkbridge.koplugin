@@ -26,6 +26,7 @@ KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自�
 | 测试文件 | 覆盖内容 |
 |---|---|
 | `tests/moon_spec.lua` | `.po` 进度格式的解析与生成（spine 索引、章内字符偏移、百分比回退、越界与畸形输入） |
+| `tests/moontxt_spec.lua` | TXT 严格解码、UTF-16 源索引、手机/平板分块显示坐标、短段确认回退、反向全文唯一与往返核对 |
 | `tests/moonsync_spec.lua` | 静读天下互通：下载列表、写回四关口（换算/自检/备份/回读校验）、兼容平台状态与文案、手动选文件、**目录换算（云浏览器选中的那一层 → 设置值）与手动输入兜底**、`peek_po` |
 | `tests/webdav_spec.lua` | 云存储层：远端路径校验、只读下载（404、非法路径、临时文件清理）、历史记录筛选与排序、上传两条路径与 `provider.base` 副本/恢复、列目录与 `show_unsupported` 还原、**借 KOReader 云浏览器选目录（`pick_folder`）**、删除守卫、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
 | `tests/main_spec.lua` | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII**、**云端历史保留策略**、**设备名探测与截断** |
@@ -39,9 +40,10 @@ KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自�
 在仓库根目录执行(需要 LuaJIT —— 与 KOReader 运行时同款,LuaJIT 官网或包管理器都能装):
 
 ```bash
-sh tests/run_all.sh            # 一次跑完六份;任何一份崩掉都会被判为失败
+sh tests/run_all.sh            # 一次跑完七份;任何一份崩掉都会被判为失败
 # 或者单跑:
 luajit tests/moon_spec.lua
+luajit tests/moontxt_spec.lua
 luajit tests/moonsync_spec.lua
 luajit tests/webdav_spec.lua
 luajit tests/main_spec.lua
@@ -220,6 +222,14 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
     - 《死人经》与《绍宋》的本地 `.po`/EPUB 样本可按同一套去空白 Unicode 字符规则解码；
       目前测试覆盖合成 spine（含非 HTML 项）及唯一命中/拒绝分支，新导入路径仍待设备实测。
     → 测试 888 → 923（moonsync 265 → 286；webdav 256 → 270）。
+
+17. **2026-11-17 修正 Moon+ 阅读单元映射（0.3.8-alpha）。** 最初回收运行时的固定首封面偏移后，《死人经》两处实际跳转均落到下一章，证明该规则不成立。根据本机 Moon+ 10.7 安装包的阅读单元构建逻辑与双书真实记录，改为解析 NCX / EPUB3 toc 导航：前置漏项合成一个单元，中间及末尾漏项并入前单元。导入按单元范围解码，写回和方向比较使用相同映射及合并文件前缀字数；旧固定偏移缓存强制失效。暂不猜测同文件锚点拆章、倒序/重复或 spine 外导航、单目录条目的自动拆章。完整回归 984 条全绿；实际跳转与验证范围见 `research/siren-cross-validation-2026-11-17.md`。版本保持 0.3.8-alpha，尚未生成新包。
+
+18. **TXT 独立坐标路径（0.3.9-alpha，2026-11-17）。** TXT 不再走 EPUB 归档；支持 UTF-8（有/无 BOM）、带 BOM UTF-16LE/BE、GB18030。GB18030 映射由 `tests/generate_gb18030.py` 生成纯 Lua 表，设备端无 Python/iconv 依赖。Moon+ TXT 的 `#` 是原文 UTF-16 块起点加处理后的显示块内偏移，而非原文字节数或直接累加字符数。手机块长 4096、平板 8192；CRLF 归一与段落缩进影响块内位置，四种配置必须显式选择，未配拒绝同步。双换行检测的 2000/500 阈值同样按 UTF-16 单元计数；块边界劈开代理对时安全拒绝。
+    - 读取仍要求 KOReader 全文唯一命中；不足 8 字的独立短段仅提供“退到紧邻前段”的再次确认，不取下一段，不冒充精确定位。前段也短、重复或缺失则拒绝。
+    - TXT 写回要求同书真实旧 `.po`、源文唯一核对、坐标往返一致、目标路径不变、写前重新 GET 未变化、备份成功与 PUT 后回读一致。不在 Moon+ 从未同步过的 TXT 上创建猜测记录。
+    - 修复没有墨桥历史时手动下载提前返回、漏掉 Moon+ 的入口；删除设置同时清理 TXT profile。
+    - 完整回归 1190 条全绿。三本新增 TXT 已实际跳转核对；《蛊真人》原 36.70% 通过，原 73.40% 经明确短段确认后退至前段。真实上传、备份、单目标修改与回读通过，**Moon+ 应用写回位置未确认，不算双向端到端通过**。细节见 `research/txt-0.3.9-validation-2026-11-17.md`。
 
 ## 已知精度上限:分页模式是「页级」定位(特性,非 bug —— 记录在案,暂不修)
 

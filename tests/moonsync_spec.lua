@@ -101,30 +101,108 @@ end
 -- 第 2 章 = 一段(8)。全书 21 字。
 local CH1 = '<body><h1>第一章</h1><p>一二三四五</p><p>六七八九十</p></body>'
 local CH2 = '<body><p>甲乙丙丁戊己庚辛</p></body>'
+local COVER = '<body><div><img src="cover.jpg"/></div></body>'
 local OPF = '<package><manifest>'
     .. '<item id="c1" href="Text/c1.xhtml" media-type="application/xhtml+xml"/>'
     .. '<item id="img" href="Images/cover.jpg" media-type="image/jpeg"/>'
     .. '<item id="c2" href="Text/c2.xhtml" media-type="application/xhtml+xml"/>'
     .. '</manifest><spine><itemref idref="c1"/><itemref idref="img"/>'
     .. '<itemref idref="c2"/></spine></package>'
+local OPF_WITH_COVER = '<package><guide><reference type="cover" href="Text/cover.xhtml"/>'
+    .. '</guide><manifest>'
+    .. '<item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>'
+    .. '<item id="c1" href="Text/c1.xhtml" media-type="application/xhtml+xml"/>'
+    .. '<item id="c2" href="Text/c2.xhtml" media-type="application/xhtml+xml"/>'
+    .. '<item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>'
+    .. '</manifest><spine><itemref idref="cover"/><itemref idref="c1"/>'
+    .. '<itemref idref="c2"/></spine></package>'
+local GAP = '<body><p>前后合并正文</p></body>' -- 6 字
+local OPF_GAP = OPF_WITH_COVER:gsub('<item id="ncx"',
+    '<item id="gap" href="Text/gap.xhtml" media-type="application/xhtml+xml"/><item id="ncx"')
+    :gsub('<itemref idref="c2"/>', '<itemref idref="gap"/><itemref idref="c2"/>')
+local function ncx(hrefs)
+    local entries = {}
+    for i, href in ipairs(hrefs) do
+        entries[i] = '<navPoint><navLabel><text>章节</text></navLabel><content src="' .. href .. '"/></navPoint>'
+    end
+    return '<ncx><navMap>' .. table.concat(entries) .. '</navMap>'
+        .. '<pageList><pageTarget><content src="Text/ignored.xhtml"/></pageTarget></pageList></ncx>'
+end
+local OPF_DUAL_NAV = OPF_GAP:gsub('</manifest>',
+    '<item id="nav" href="Nav/toc.xhtml" properties="nav" media-type="application/xhtml+xml"/></manifest>')
+local NAV_ALL = '<html><nav epub:type="landmarks"><a href="ignored.xhtml">忽略</a></nav>'
+    .. '<nav epub:type="toc"><ol><li><a href="../Text/cover.xhtml">封面</a>'
+    .. '<ol><li><a href = "../Text/c%31.xhtml">一</a></li>'
+    .. '<li><a href="../Text/gap.xhtml">补页</a></li>'
+    .. '<li><a href="../Text/c2.xhtml">二</a></li></ol></li></ol></nav>'
+    .. '<nav epub:type="page-list"><a href="ignored.xhtml">忽略</a></nav></html>'
+local NAV_FIXTURES = {
+    ["fake-cover.epub"] = { opf = OPF_WITH_COVER, toc = ncx({ "Text/c1.xhtml", "Text/c2.xhtml" }) },
+    ["fake-gap.epub"] = { opf = OPF_GAP, toc = ncx({ "Text/cover.xhtml", "Text/c1.xhtml", "Text/c2.xhtml" }) },
+    ["fake-fragment.epub"] = { opf = OPF_GAP, toc = ncx({ "Text/c1.xhtml#a", "Text/c1.xhtml#b" }) },
+    ["fake-reverse.epub"] = { opf = OPF_GAP, toc = ncx({ "Text/c2.xhtml", "Text/c1.xhtml" }) },
+    ["fake-missing-nav.epub"] = { opf = OPF_GAP },
+    ["fake-front.epub"] = { opf = OPF_GAP, toc = ncx({ "Text/gap.xhtml", "Text/c2.xhtml" }) },
+    ["fake-tail.epub"] = { opf = OPF_GAP, toc = ncx({ "Text/cover.xhtml", "Text/c1.xhtml" }) },
+    ["fake-single.epub"] = { opf = OPF_GAP, toc = ncx({ "Text/c2.xhtml" }) },
+    ["fake-dual-nav.epub"] = { opf = OPF_DUAL_NAV,
+        toc = ncx({ "Text/cover.xhtml", "Text/c1.xhtml", "Text/c2.xhtml" }), nav = NAV_ALL },
+    ["fake-short-nav.epub"] = { opf = OPF_DUAL_NAV,
+        toc = ncx({ "Text/cover.xhtml", "Text/c1.xhtml", "Text/c2.xhtml" }),
+        nav = '<html><nav epub:type="toc"><a href="../Text/c1.xhtml">一</a>'
+            .. '<a href="../Text/c2.xhtml">二</a></nav></html>' },
+}
 
 package.preload["ffi/archiver"] = function()
     return {
         Reader = {
             new = function()
+                local opened_path
                 return {
-                    open = function() return true end,
+                    open = function(_, path) opened_path = path; return true end,
                     iterate = function()
-                        local entries = {
-                            { path = "mimetype" }, { path = "OEBPS/content.opf" },
-                            { path = "OEBPS/Text/c1.xhtml" }, { path = "OEBPS/Text/c2.xhtml" },
-                        }
+                        local entries
+                        if opened_path == "fake-cover.epub" then
+                            entries = {
+                                { path = "mimetype" }, { path = "OEBPS/content.opf" },
+                                { path = "OEBPS/Text/cover.xhtml" }, { path = "OEBPS/Text/c1.xhtml" },
+                                { path = "OEBPS/Text/c2.xhtml" },
+                            }
+                        else
+                            entries = {
+                                { path = "mimetype" }, { path = "OEBPS/content.opf" },
+                                { path = "OEBPS/Text/c1.xhtml" }, { path = "OEBPS/Text/c2.xhtml" },
+                            }
+                        end
                         local i = 0
                         return function() i = i + 1; return entries[i] end
                     end,
                     extractToMemory = function(_, key)
-                        if key == "OEBPS/content.opf" then return OPF end
-                        if key == "OEBPS/Text/c1.xhtml" then return CH1 end
+                        local fixture = NAV_FIXTURES[opened_path]
+                        if fixture then
+                            if key == "OEBPS/content.opf" then return fixture.opf end
+                            if key == "OEBPS/toc.ncx" then return fixture.toc end
+                            if key == "OEBPS/Nav/toc.xhtml" then return fixture.nav end
+                            if key == "OEBPS/Text/cover.xhtml" then return COVER end
+                            if key == "OEBPS/Text/gap.xhtml" then return GAP end
+                            if key == "OEBPS/Text/c1.xhtml" and opened_path == "fake-gap.epub" then
+                                return (CH1:gsub("</p><p>", ""))
+                            end
+                        end
+                        if key == "OEBPS/content.opf" then
+                            return opened_path == "fake-cover.epub" and OPF_WITH_COVER or OPF
+                        end
+                        if key == "OEBPS/Text/cover.xhtml" and opened_path == "fake-cover.epub" then
+                            return COVER
+                        end
+                        if key == "OEBPS/Text/c1.xhtml" then
+                            if opened_path == "fake-short-lead.epub" then
+                                return '<body><div><p>旅行家</p><img src="logo.png"/></div>'
+                                    .. '<h2><span>第三部</span><br/><span>总 结</span></h2>'
+                                    .. '<p>这是足够长且可以唯一搜索的正文首句。</p></body>'
+                            end
+                            return CH1
+                        end
                         if key == "OEBPS/Text/c2.xhtml" then return CH2 end
                         return nil
                     end,
@@ -286,7 +364,108 @@ do
         and mismatch_err:find("差异过大", 1, true) ~= nil)
 end
 
+-- ── 两本实书的最小结构反例：前置漏项 vs 中间漏项 ───────────────────────
+print("== Moon+ 导航阅读单元映射 ==")
+do
+    local m = MS.moon_book_metrics("fake-cover.epub")
+    check("带 guide 封面的书能统计", m ~= nil)
+    eq("目录未收录首封面时补一个阅读单元", m and #m.units, 3)
+    eq("首正文仍映射原始第二项", m and m.units[2].first, 2)
+
+    -- 《死人经》型：导航未收封面，前置内容补为一个单元，正文无需平移。
+    local pos, err = MS.position_from_po("fake-cover.epub", {
+        star = 2, hash = 0, pct = 62,
+    })
+    check("保留前置单元后能还原位置", pos ~= nil, err)
+    eq("*2 定位到原始 spine 的 c2", pos and pos.snippet, "甲乙丙丁戊己庚辛")
+
+    local bad = MS.position_from_po("fake-cover.epub", { star = 3, hash = 0, pct = 100 })
+    eq("映射后越界序号仍拒绝", bad, nil)
+
+    local plain = MS.moon_book_metrics("fake.epub")
+    eq("没有导航时保留原始 spine 口径", plain and #plain.units, 3)
+
+    -- KOReader 的 c1 映射到 Moon+ 的 *1，导入、方向提示和写回共用映射。
+    local server = { type = "webdav", address = "https://dav", url = "Books",
+                     username = "u", password = "p" }
+    local plugin = {
+        server = server,
+        ui = { document = {
+            file = "fake-cover.epub",
+            getXPointer = function() return "/body/DocFragment[2]/body/p[2]/text().3" end,
+            getTextFromXPointer = function() return "八九十" end,
+        } },
+    }
+    local job, jerr = MS.build_push_job(plugin)
+    check("写回带封面书也能算出", job ~= nil, jerr)
+    eq("写回时 c1 映射为 Moon+ 的 *1", job and job.section, 1)
+    check("写回正文保留前置单元", job and job.body:find("*1@0#11:", 1, true) ~= nil,
+          job and job.body)
+
+    local local_pos = MS.local_position(plugin)
+    eq("方向比较也换成 Moon+ 坐标", local_pos and local_pos.section, 1)
+
+    -- 《诡秘之主》型：目录收了封面却漏掉中间一页；偏移只从漏项之后发生。
+    local gap = MS.moon_book_metrics("fake-gap.epub")
+    eq("中间漏项合并后共三个阅读单元", gap and #gap.units, 3)
+    eq("中间页归前一个目录单元", gap and gap.units[2].last, 3)
+    eq("后一正文映射回第四个原始项", gap and gap.units[3].first, 4)
+    local before = MS.position_from_po("fake-gap.epub", { star = 1, hash = 3 })
+    eq("漏项之前不偏移", before and before.snippet, "一二三四五六七八九十")
+    local inside = MS.position_from_po("fake-gap.epub", { star = 1, hash = 15 })
+    eq("合并单元偏移可落到漏收文件内", inside and inside.snippet, "前后合并正文")
+    eq("合并单元还原正确全书字符", inside and inside.character_offset, 15)
+    local after = MS.position_from_po("fake-gap.epub", { star = 2, hash = 2 })
+    eq("漏项之后映射正确章节", after and after.snippet, "丙丁戊己庚辛")
+    eq("后一单元全书字符包含漏项", after and after.character_offset, 21)
+    eq("不得把偏移越界静默跳入下一单元", MS.position_from_po("fake-gap.epub", { star = 1, hash = 19 }), nil)
+
+    plugin.ui.document.file = "fake-gap.epub"
+    plugin.ui.document.getXPointer = function() return "/body/DocFragment[3]/body/p[1]/text().2" end
+    plugin.ui.document.getTextFromXPointer = function() return "合并正文" end
+    local merged_job, merged_err = MS.build_push_job(plugin)
+    check("合并文件内仍可构建写回任务", merged_job ~= nil, merged_err)
+    eq("合并文件写回前一个单元", merged_job and merged_job.section, 1)
+    eq("写回偏移加上同单元前置文件字数", merged_job and merged_job.hash, 15)
+    eq("写回百分比不能重复加前置文件", merged_job and Moon.parse(merged_job.body).pct, 55.6)
+    local merged_local = MS.local_position(plugin)
+    eq("方向比较的单元一致", merged_local and merged_local.section, 1)
+    eq("方向比较的单元内偏移一致", merged_local and merged_local.hash, 15)
+
+    local front = MS.moon_book_metrics("fake-front.epub")
+    eq("多个前置漏项只补一个单元", front and #front.units, 3)
+    eq("前置单元包含全部漏项", front and front.units[1].last, 2)
+    local tail = MS.moon_book_metrics("fake-tail.epub")
+    eq("末尾漏项并入最后单元", tail and tail.units[2].last, 4)
+    local tail_pos = MS.position_from_po("fake-tail.epub", { star = 1, hash = 21 })
+    eq("末尾合并项偏移也能导入", tail_pos and tail_pos.snippet, "丙丁戊己庚辛")
+    local dual = MS.moon_book_metrics("fake-dual-nav.epub")
+    eq("双导航选择条目较多的 EPUB3 目录", dual and #dual.units, 4)
+    eq("EPUB3 嵌套目录按顺序读取并规范化路径", dual and dual.units[3].first, 3)
+    local shorter = MS.moon_book_metrics("fake-short-nav.epub")
+    eq("EPUB3 条目较少时沿用 NCX", shorter and #shorter.units, 3)
+    eq("沿用 NCX 的中间合并仍存在", shorter and shorter.units[2].last, 3)
+    for _, file in ipairs({ "fake-fragment.epub", "fake-reverse.epub", "fake-missing-nav.epub", "fake-single.epub" }) do
+        local invalid, why = MS.moon_book_metrics(file)
+        eq("不确定导航拒绝猜测 " .. file, invalid, nil)
+        check("不确定导航有明确原因 " .. file, type(why) == "string" and #why > 0)
+    end
+
+    local key = "inkbridge_moon_coordinate_metrics:fake-gap.epub"
+    settings[key] = { total = 27, starts = { 0 }, html_to_item = {}, item_count = 4, moon_spine_offset = 1 }
+    local rebuilt, reused = MS.moon_book_metrics("fake-gap.epub")
+    eq("旧封面偏移缓存必须重建", reused, false)
+    eq("缓存记录新坐标模型版本", rebuilt and rebuilt.coordinate_version, 2)
+end
+
 -- ── HTTP 请求构造 ──────────────────────────────────────────────────────────
+do
+    local pos, err = MS.position_from_po("fake-short-lead.epub", { star = 0, hash = 0 })
+    check("短卷名加跨行标题的章首仍可还原", pos ~= nil, err)
+    eq("章首兜底使用正文不拼跨行标题", pos and pos.snippet,
+       "这是足够长且可以唯一搜索的正文首句。")
+    eq("顺延锚点不篡改源字符坐标", pos and pos.character_offset, 0)
+end
 print("== HTTP 请求构造 ==")
 do
     local server = { username = "u", password = "p" }
@@ -1058,6 +1237,128 @@ do
 
     settings["inkbridge_moon_dir"] = nil
     MS.set_platform("moon")
+end
+
+print("== TXT 导入、方向、写回与覆盖保护 ==")
+do
+    local old_profile = G_reader_settings:readSetting(MS.TXT_SETTING)
+    G_reader_settings:saveSetting(MS.TXT_SETTING, nil)
+    eq("TXT未配置不猜手机平板", MS.get_txt_profile(), nil)
+    eq("TXT非法配置拒绝", MS.set_txt_profile("guess"), false)
+    eq("TXT明确设置手机无缩进", MS.set_txt_profile("phone_plain"), true)
+    eq("TXT配置读回", MS.get_txt_profile().block_size, 4096)
+    local original_fetch, original_request, original_backup = MS.fetch_po, MS.request, MS.backup_po
+    local WebDAV = require("inkbridge_webdav")
+    local original_confirm = WebDAV.confirm_jump
+    local path = (os.getenv("TEMP") or "/tmp") .. "/inkbridge-txt039-fixture.txt"
+    local first = "第一段中文正文足够长用于读取校验。"
+    local second = "第二段中文正文足够长用于写回校验。"
+    local bytes = "\239\187\191" .. first .. "\r\n  " .. second
+    local f = assert(io.open(path, "wb")); f:write(bytes); f:close()
+    local total = Moon.utf8_len(first .. "\r\n  " .. second)
+    local expected_hash = Moon.utf8_len(first .. "\n  ")
+    local old_line = "123456*0@0#0:0.0%"
+    MS.fetch_po = function() return old_line end
+    local plugin = {server={type="webdav",address="https://dav",url="Books"},
+        ui={document={file=path,getXPointer=function() return "/FictionBook/body/section/p/text().0" end,
+            getTextFromXPointer=function() return second end}}, path=os.getenv("TEMP") or "/tmp"}
+    local remote, confirm_opts
+    WebDAV.confirm_jump = function(_, value, opts) remote, confirm_opts = value, opts end
+    MS.import_from_moon(plugin, {already_confirmed=true})
+    eq("TXT导入源锚点", remote and remote.text_anchor, first)
+    eq("TXT导入强制唯一", remote and remote.require_unique_text, true)
+    eq("TXT不重复确认", confirm_opts and confirm_opts.already_confirmed, true)
+    local loc = MS.local_position(plugin)
+    eq("TXT方向不解析DocFragment", loc and loc.section, 0)
+    eq("TXT方向使用显示块内坐标", loc and loc.hash, expected_hash)
+    local job, err = MS.build_push_job(plugin)
+    check("TXT写回准备成功", job ~= nil, err)
+    eq("TXT写回hash", job and job.hash, expected_hash)
+    eq("TXT写回沿用常量", job and Moon.parse(job.body).book_ref, "123456")
+    eq("TXT写回沿用at", job and Moon.parse(job.body).at, 0)
+    eq("TXT写回单元", job and Moon.parse(job.body).star, 0)
+    eq("TXT写回比例", job and Moon.parse(job.body).pct, tonumber(string.format("%.1f",expected_hash/total*100)))
+    eq("TXT专属格式标记", job and job.format, "txt")
+    eq("TXT文件名不碰EPUB", job and job.filename, "inkbridge-txt039-fixture.txt.po")
+    eq("TXT原文自检不可省略", job and job.checked, "已通过（源 TXT 全文唯一）")
+    local calls, backup_calls = {}, 0
+    MS.backup_po = function(_, filename, value)
+        backup_calls = backup_calls + 1
+        eq("TXT备份准确文件名", filename, job.filename)
+        eq("TXT备份逐字原值", value, old_line)
+        return "backup.txt.po.bak"
+    end
+    MS.request = function(_, url, method, body)
+        calls[#calls+1] = method
+        eq("TXT绝不写其他书", url, job.url)
+        if method == "PUT" then eq("TXT准确写入新记录", body, job.body); return 201 end
+        return 200, "OK", #calls == 1 and old_line or job.body
+    end
+    local ok = MS._do_push(plugin, job, {silent=true})
+    eq("TXT回读成功", ok, true)
+    eq("TXT先GET再PUT再GET", table.concat(calls,","), "GET,PUT,GET")
+    eq("TXT备份仅一次", backup_calls, 1)
+    local count = 0
+    MS.request = function() count=count+1; return 200,"OK","changed" end
+    eq("TXT远端变化拒绝", MS._do_push(plugin, job, {silent=true}), false)
+    eq("TXT远端变化不PUT", count, 1)
+    MS.request = function() error("provider exception") end
+    eq("TXT预检抛异常不崩溃", MS._do_push(plugin, job, {silent=true}), false)
+    local wrong = {}; for k,v in pairs(job) do wrong[k]=v end
+    wrong.filename = "other.epub.po"
+    count=0; MS.request=function() count=count+1 end
+    eq("TXT错误文件名拒绝", MS._do_push(plugin, wrong, {silent=true}), false)
+    eq("TXT错文件无网络操作", count, 0)
+    wrong.filename=job.filename; wrong.url="https://dav/other.txt.po"
+    eq("TXT错误URL拒绝", MS._do_push(plugin, wrong, {silent=true}), false)
+    eq("TXT错URL无网络操作", count, 0)
+    MS.request=function() count=count+1; return 200,"OK",old_line end
+    MS.backup_po=function() return nil,"disk full" end
+    count=0
+    eq("TXT备份失败拒绝PUT", MS._do_push(plugin, job, {silent=true}), false)
+    eq("TXT备份失败仅GET", count, 1)
+    MS.backup_po=function() error("disk exception") end
+    eq("TXT备份抛异常拒绝PUT", MS._do_push(plugin, job, {silent=true}), false)
+    MS.backup_po=function() return "backup" end
+    for _, mode in ipairs({"reject", "throw", "mismatch", "unreadable"}) do
+        local n=0
+        MS.request=function(_, _, method)
+            n=n+1
+            if n==1 then return 200,"OK",old_line end
+            if method=="PUT" then
+                if mode=="reject" then return 403,"Forbidden" end
+                if mode=="throw" then error("PUT uncertain") end
+                return 201
+            end
+            if mode=="unreadable" then return 500,"Error",job.body end
+            return 200,"OK","wrong record"
+        end
+        eq("TXT失败不可报成功 "..mode, MS._do_push(plugin,job,{silent=true}), false)
+    end
+    MS.fetch_po=function() return nil,"network error" end
+    eq("TXT取不到旧记录不创建", MS.build_push_job(plugin), nil)
+    MS.fetch_po=function() return "123456*1@0#0:0%" end
+    eq("TXT未知坐标旧记录不覆盖", MS.build_push_job(plugin), nil)
+    MS.fetch_po=function() return old_line end
+    plugin.ui.document.getTextFromXPointer=function() return "这是完全不同的另一本书的正文。" end
+    eq("TXT异版原文不写回", MS.build_push_job(plugin), nil)
+    local f2 = assert(io.open(path,"wb")); f2:write(first .. "\r\n轰——！\r\n" .. second); f2:close()
+    local short_hash = Moon.utf8_len(first) + 1
+    local short_total = Moon.utf8_len(first .. "\r\n轰——！\r\n" .. second)
+    MS.fetch_po = function() return Moon.format("123456",0,short_hash,short_hash/short_total*100,0) end
+    remote = nil
+    MS.import_from_moon(plugin,{already_confirmed=true})
+    eq("短段已确认自动提示仍须二次确认",remote,nil)
+    local context_dialog = shown[#shown]
+    eq("短段按钮明确前移",context_dialog.ok_text,"退到前段")
+    check("短段明确不能精确定位",context_dialog.text:find("不能精确定位",1,true) ~= nil)
+    context_dialog.ok_callback()
+    eq("确认后只去紧邻前段",remote and remote.text_anchor,first)
+    eq("前段仍要求全文唯一",remote and remote.require_unique_text,true)
+    MS.fetch_po, MS.request, MS.backup_po = original_fetch, original_request, original_backup
+    WebDAV.confirm_jump = original_confirm
+    os.remove(path)
+    G_reader_settings:saveSetting(MS.TXT_SETTING, old_profile)
 end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))

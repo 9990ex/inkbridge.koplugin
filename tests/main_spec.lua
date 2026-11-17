@@ -9,6 +9,8 @@ local script_path = arg and arg[0] or "tests/main_spec.lua"
 local script_dir  = script_path:match("^(.*)[/\\][^/\\]*$") or "."
 local PLUGIN_DIR  = script_dir .. "/../inkbridge.koplugin"
 package.path = PLUGIN_DIR .. "/?.lua;" .. package.path
+local is_windows  = package.config:sub(1, 1) == "\\"
+local null_device = is_windows and "nul" or "/dev/null"
 
 -- ── 可观测的打桩设施 ───────────────────────────────────────────────────
 local shown       = {}   -- UIManager:show 收到的内容
@@ -31,7 +33,7 @@ package.preload["ui/uimanager"] = function()
     return {
         show     = function(_, widget) shown[#shown + 1] = widget end,
         close    = function() end,
-        nextTick = function(fn) fn() end,
+        nextTick = function(_, fn) fn() end,
     }
 end
 package.preload["ui/widget/infomessage"] = function() return { new = function(_, o) return o or {} end } end
@@ -54,7 +56,8 @@ package.preload["ui/network/manager"] = function()
     }
 end
 
-local SETTINGS_DIR = (os.getenv("TEMP") or "/tmp") .. "\\ib-spec-settings"
+local SETTINGS_DIR = (os.getenv("TEMP") or "/tmp")
+    .. (is_windows and "\\" or "/") .. "ib-spec-settings"
 package.preload["datastorage"] = function()
     return { getSettingsDir = function() return SETTINGS_DIR end }
 end
@@ -66,7 +69,9 @@ package.preload["util"] = function()
             return c
         end,
         makePath = function(dir)
-            os.execute('mkdir "' .. dir:gsub("/", "\\") .. '" 2>nul')
+            local path = is_windows and dir:gsub("/", "\\") or dir
+            local command = is_windows and "mkdir" or "mkdir -p"
+            os.execute(command .. ' "' .. path .. '" 2>' .. null_device)
             return true
         end,
     }
@@ -337,7 +342,7 @@ do
     local menu_items = {}
     plugin:addToMainMenu(menu_items)
     local menu = menu_items.inkbridge.sub_item_table_func()
-    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.8-alpha")
+    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.9-alpha")
     local status_index = item_index(menu, "同步状态")
     local upload_index = item_index(menu, "上传阅读进度")
     check("同步状态排在上传前", status_index and upload_index and status_index < upload_index)
@@ -367,6 +372,36 @@ do
 end
 
 -- ============================================================================
+print("== 无墨桥历史时仍可手动读取 Moon+ ==")
+do
+    local MS = require("inkbridge_moonsync")
+    local list, download, peek, import, confirm = WebDAV.list_history, WebDAV.download, MS.peek_po, MS.import_from_moon, WebDAV.confirm_jump
+    local plugin = new_plugin()
+    local entry = {book_id="txt-first-sync",book_name="测试TXT"}
+    local imports, peeks, confirms = 0, 0, 0
+    WebDAV.list_history = function(_,_,cb) cb(true,{}) end
+    WebDAV.download = function(_,_,cb) cb(false,nil,"missing") end
+    MS.peek_po = function(_,cb) peeks=peeks+1;cb({po={star=0,hash=100}}) end
+    MS.import_from_moon = function() imports=imports+1 end
+    WebDAV.confirm_jump = function() confirms=confirms+1 end
+    plugin:_sync(entry,"download")
+    eq("没有墨桥历史仍查Moon",peeks,1)
+    eq("有Moon记录进入正文核对",imports,1)
+    MS.peek_po = function(_,cb) peeks=peeks+1;cb(nil) end
+    plugin:_sync(entry,"download")
+    eq("两处均无记录不导入",imports,1)
+    contains("两处无记录明确提示",shown[#shown].text,"没有找到")
+    WebDAV.download = function(_,_,cb) cb(true,{book_id=entry.book_id}) end
+    plugin:_sync(entry,"download")
+    eq("旧版历史仍优先兼容",confirms,1)
+    eq("旧版存在不额外查Moon",peeks,2)
+    WebDAV.download = function(_,_,cb) cb(false,nil,"HTTP 403") end
+    plugin:_sync(entry,"download")
+    eq("旧版请求异常不吞错转Moon",peeks,2)
+    contains("旧版请求异常如实提示",shown[#shown].text,"读取旧版远端记录失败")
+    WebDAV.list_history, WebDAV.download, MS.peek_po, MS.import_from_moon, WebDAV.confirm_jump = list, download, peek, import, confirm
+end
+
 print("== 7. 云端历史记录的保留策略（每台设备每本书留 10 条）==")
 -- ============================================================================
 -- 这是本项目里**唯一会删用户云端数据**的代码,每一条安全线都要有测试。
@@ -575,7 +610,11 @@ do
 end
 
 -- 收尾：清掉测试用的设置目录
-os.execute('rmdir /s /q "' .. SETTINGS_DIR .. '" 2>nul')
+if is_windows then
+    os.execute('rmdir /s /q "' .. SETTINGS_DIR .. '" 2>' .. null_device)
+else
+    os.execute('rm -rf "' .. SETTINGS_DIR .. '" 2>' .. null_device)
+end
 
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end

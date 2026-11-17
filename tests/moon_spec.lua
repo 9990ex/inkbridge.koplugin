@@ -216,6 +216,16 @@ do
     -- 越界要拒绝,而不是给出跨块片段
     eq("偏移超过全长要拒绝", Moon.snippet_in_blocks(blocks, 9999, 20), nil)
     eq("空块列表要拒绝", Moon.snippet_in_blocks({}, 0, 20), nil)
+
+    -- 书籍卷名可能是短块,紧接着才是章节标题;章首坐标应顺延取同章可搜索锚点。
+    local short_lead = { "旅行家", "第二百五十章终点", "正文内容足够长用于定位" }
+    eq("章首短卷名顺延到章节标题", Moon.snippet_in_blocks(short_lead, 0, 20),
+       "第二百五十章终点")
+    eq("短块内部偏移不足时仍拒绝猜测", Moon.snippet_in_blocks(short_lead, 1, 20), nil)
+    eq("短卷名兜底跳过跨行标题选正文", Moon.snippet_in_blocks(short_lead, 0, 20,
+       { "div", "h2", "p" }), "正文内容足够长用于定位")
+    eq("同章仅短卷名和标题时不越章找正文", Moon.snippet_in_blocks(
+       { "旅行家", "第三部总 结" }, 0, 20, { "div", "h2" }), nil)
 end
 
 -- ── 反向:xpointer → (章节序号, 段序, 段内偏移) ───────────────────────────

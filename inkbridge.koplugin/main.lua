@@ -276,7 +276,14 @@ function InkBridge:_sync(entry, mode)
                     elseif legacy_err ~= "missing" then
                         show("墨桥：读取旧版远端记录失败 —— " .. WebDAV.describe_error(legacy_err))
                     else
-                        show("墨桥：没有找到这本书的历史记录。")
+                        -- 首次同步 TXT 往往只有 Moon+ 的 .po，不能因没有墨桥历史就提前返回。
+                        Moonsync.peek_po(self, function(peek)
+                            if peek then
+                                Moonsync.import_from_moon(self)
+                            else
+                                show("墨桥：没有找到这本书的历史记录。")
+                            end
+                        end)
                     end
                 end)
                 return
@@ -596,6 +603,26 @@ function InkBridge:_webdav_menu()
           enabled_func = function() return usable end,
           callback = function()
               Moonsync.pick_po(self, function(name) Moonsync.import_named(self, name) end)
+           end },
+        { text = "TXT 坐标设置",
+          help_text = "须与 Moon+ 的设备类型和段落缩进一致；仅支持中文模式，关闭删除多余空行、姓名替换与繁简转换。",
+          enabled_func = function() return usable end,
+          sub_item_table_func = function()
+              local items = {}
+              for _, profile in ipairs(Moonsync.TXT_PROFILES) do
+                  items[#items + 1] = {
+                      text = profile.name,
+                      checked_func = function()
+                          local current = Moonsync.get_txt_profile()
+                          return current and current.id == profile.id or false
+                      end,
+                      callback = function()
+                          Moonsync.set_txt_profile(profile.id)
+                          show("TXT 坐标：" .. profile.name .. "。请确认 Moon+ 使用中文模式，关闭删除多余空行、姓名替换与繁简转换。")
+                      end,
+                  }
+              end
+              return items
           end },
     }
 end
@@ -945,6 +972,7 @@ function InkBridge:deletePluginSettings()
     G_reader_settings:delSetting("inkbridge_device_label")
     G_reader_settings:delSetting("inkbridge_webdav_server")
     G_reader_settings:delSetting("inkbridge_moon_dir")
+    G_reader_settings:delSetting("inkbridge_moon_txt_profile")
     G_reader_settings:delSetting("inkbridge_moon_book_ref")
     G_reader_settings:delSetting("inkbridge_moon_auto_push")
     G_reader_settings:delSetting("inkbridge_auto_check")

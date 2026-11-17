@@ -2,13 +2,13 @@
 --
 -- 静读天下把每本书的进度写在云端 `<书名>.epub.po`(单行纯文本)。
 -- 格式与实测解码见 墨桥-samples/po-findings.md:
---   `*` 章节序号(0 基,对应原 EPUB spine itemref)—— Moon+ 的源坐标,不映射成 KOReader DocFragment
+--   `*` 阅读单元序号(0 基,由 EPUB 导航与 spine 合并建立)—— 不等同 KOReader DocFragment
 --   `#` 该章节内的字符偏移                                —— 决定位置
 --   `:%` 只作整书字符比例粗校验;首个常量/`@` 与定位无关,只读不改。
 --
 -- 本模块负责:
 --   1) 按**用户指定**的目录取回当前书的 .po(**只读**,绝不改动静读天下的文件);
---   2) 解析出 Moon+ EPUB spine 序号与章内字符偏移;
+--   2) 解析出 Moon+ 阅读单元序号与单元内字符偏移;
 --   3) 累加前置可读正文,换成整本 Unicode 字符坐标,并按字符坐标取正文锚点;
 --   4) KOReader 全文唯一命中后才交给 WebDAV.confirm_jump,不使用 DocFragment 对照。
 --
@@ -23,6 +23,7 @@
 -- 且与 DOM 结构无关的路子。直接拼 xpointer 留作后续优化(更快,但要先验证结构一致)。
 
 local Moon        = require("inkbridge_moon")
+local Txt         = require("inkbridge_moontxt")
 local WebDAV      = require("inkbridge_webdav")
 local ConfirmBox  = require("ui/widget/confirmbox")
 local InfoMessage = require("ui/widget/infomessage")
@@ -37,6 +38,30 @@ Moonsync.DEFAULT_DIR = "Apps/Books/.Moon+/Cache"
 Moonsync.SNIPPET_LEN = 48
 Moonsync.PCT_TOLERANCE = 3
 Moonsync.DIR_SETTING = "inkbridge_moon_dir"
+Moonsync.TXT_SETTING = "inkbridge_moon_txt_profile"
+Moonsync.TXT_PROFILES = {
+    { id = "phone_indent", name = "手机 · 开启段落缩进", block_size = 4096, indent = true },
+    { id = "phone_plain", name = "手机 · 关闭段落缩进", block_size = 4096, indent = false },
+    { id = "tablet_indent", name = "平板 · 开启段落缩进", block_size = 8192, indent = true },
+    { id = "tablet_plain", name = "平板 · 关闭段落缩进", block_size = 8192, indent = false },
+}
+function Moonsync.get_txt_profile()
+    local id = G_reader_settings and G_reader_settings:readSetting(Moonsync.TXT_SETTING)
+    for _, profile in ipairs(Moonsync.TXT_PROFILES) do
+        if profile.id == id then return profile end
+    end
+    return nil, "请先在高级选项 → 存储选项 → TXT 坐标设置中选择 Moon+ 设备和段落缩进配置"
+end
+
+function Moonsync.set_txt_profile(id)
+    for _, profile in ipairs(Moonsync.TXT_PROFILES) do
+        if profile.id == id and G_reader_settings then
+            G_reader_settings:saveSetting(Moonsync.TXT_SETTING, id)
+            return true
+        end
+    end
+    return false
+end
 
 -- ── 兼容平台 ──────────────────────────────────────────────────────────────
 --
@@ -354,6 +379,21 @@ local function spine_of(arc)
         if id and href then manifest[id] = href end
     end
 
+    -- Moon+ 先从导航目录建阅读单元，再合并目录未列出的 spine 内容。
+    -- guide 的封面声明不决定 *N；保留导航来源，不能再用固定封面偏移。
+    local navigation = {}
+    local toc_id = opf:match("<spine[^>]*%stoc%s*=%s*[\"']([^\"']+)[\"']")
+    for tag in opf:gmatch("<item%s[^>]*>") do
+        local id = tag:match("%sid%s*=%s*[\"']([^\"']+)[\"']")
+        local href = tag:match("%shref%s*=%s*[\"']([^\"']+)[\"']")
+        local media = tag:match("%smedia%-type%s*=%s*[\"']([^\"']+)[\"']")
+        local props = tag:match("%sproperties%s*=%s*[\"']([^\"']+)[\"']") or ""
+        if href and ((toc_id and id == toc_id) or (not toc_id and media == "application/x-dtbncx+xml")) then
+            navigation.ncx = href
+        end
+        if href and (" " .. props .. " "):find("%snav%s") then navigation.nav = href end
+    end
+
     -- spine 顺序,只保留正文类条目 —— 与 Python 侧验证过的索引口径保持一致。
     -- 但若按扩展名筛完一个都不剩(说明本书命名超出预期),退回未筛选的完整 spine:
     -- 宁可索引可能错位,也不要整本书都读不了。
@@ -367,7 +407,7 @@ local function spine_of(arc)
     end
     local spine = #spine_html > 0 and spine_html or spine_all
     local base = opf_key:match("^(.*)/[^/]*$")
-    return spine, (base and base ~= "") and base or "", nil, spine_all
+    return spine, (base and base ~= "") and base or "", nil, spine_all, navigation
 end
 
 -- 打开归档读某个条目;rar/zip 内部的路径可能是 "OEBPS/Text/x.xhtml" 也可能已是完整路径。
@@ -378,6 +418,96 @@ local function extract_any(arc, key, href)
         pcall(function() data = arc:extractToMemory(href) end)
     end
     return data
+end
+
+-- 只用于归档内路径：解 URI 转义、XML 属性转义和相对路径，不按文件名猜身份。
+local function archive_path(base, href)
+    local path = tostring(href):gsub("&amp;", "&"):gsub("&quot;", '"'):gsub("&apos;", "'")
+    path = path:gsub("%%(%x%x)", function(n) return string.char(tonumber(n, 16)) end)
+    local parts = {}
+    for part in ((base ~= "" and base .. "/" or "") .. path):gmatch("[^/]+") do
+        if part == ".." then
+            if #parts == 0 then return nil end
+            table.remove(parts)
+        elseif part ~= "." then parts[#parts + 1] = part end
+    end
+    return table.concat(parts, "/")
+end
+
+-- 读取 NCX navMap 或 EPUB3 toc nav；不把 page-list/landmarks 计为章节。
+local function navigation_hrefs(xml, kind)
+    xml = xml:gsub("<!%-%-.-%-%->", "")
+    local links, active, depth = {}, false, 0
+    for closing, qualified, attrs in xml:gmatch("<(/?)([%w_:]+)([^>]*)>") do
+        local name = qualified:match("([^:]+)$"):lower()
+        if kind == "ncx" then
+            if name == "navmap" then active = closing ~= "/" end
+            if active and name == "content" and closing == "" then
+                local src = attrs:match("%ssrc%s*=%s*[\"']([^\"']+)[\"']")
+                if src then links[#links + 1] = src end
+            end
+        else
+            if name == "nav" then
+                if closing == "/" then
+                    if active then depth = depth - 1; if depth == 0 then break end end
+                elseif active then depth = depth + 1
+                else
+                    local typ = attrs:match("%sepub:type%s*=%s*[\"']([^\"']+)[\"']") or ""
+                    if (" " .. typ .. " "):find("%stoc%s") then active, depth = true, 1 end
+                end
+            elseif active and name == "a" and closing == "" then
+                local href = attrs:match("%shref%s*=%s*[\"']([^\"']+)[\"']")
+                if href then links[#links + 1] = href end
+            end
+        end
+    end
+    return links
+end
+
+-- 已验证的整文件导航：前置漏项合成一个阅读单元，中间/末尾漏项并入前单元。
+-- 同文件多锚点、倒序或导航指向 spine 外内容需要另一套字符模型，拒绝猜测。
+local function moon_units(arc, base, spine, navigation)
+    local selected, nav_key
+    for _, kind in ipairs({ "ncx", "nav" }) do
+        local href = navigation[kind]
+        if href then
+            local key = archive_path(base, href)
+            local xml = key and extract_any(arc, key, href)
+            if type(xml) ~= "string" then return nil, "读不出 EPUB 导航目录" end
+            local links = navigation_hrefs(xml, kind)
+            if not selected or #links >= #selected then selected, nav_key = links, key end
+        end
+    end
+    if not selected or #selected == 0 then
+        if selected then return nil, "EPUB 导航目录没有可识别的阅读单元" end
+        local units = {}
+        for i = 1, #spine do units[i] = { first = i, last = i } end
+        return units
+    end
+    if #selected == 1 and #spine > 2 then
+        return nil, "暂不支持静读天下单目录条目的自动拆章映射"
+    end
+    local by_path = {}
+    for i, href in ipairs(spine) do
+        local key = archive_path(base, href)
+        if not key or by_path[key] then return nil, "EPUB spine 存在重复或无效路径" end
+        by_path[key] = i
+    end
+    local indices, previous = {}, 0
+    local nav_base = nav_key:match("^(.*)/[^/]*$") or ""
+    for _, href in ipairs(selected) do
+        if href:find("#", 1, true) then return nil, "暂不支持按章内锚点拆分的静读天下目录" end
+        local key = archive_path(nav_base, href)
+        local index = key and by_path[key]
+        if not index or index <= previous then return nil, "EPUB 导航顺序无法可靠对应 spine" end
+        indices[#indices + 1], previous = index, index
+    end
+    local units = {}
+    if indices[1] > 1 then units[1] = { first = 1, last = indices[1] - 1 } end
+    for i, first in ipairs(indices) do
+        units[#units + 1] = { first = first, last = (indices[i + 1] or (#spine + 1)) - 1 }
+    end
+    return units
 end
 
 -- 读第 section_index(0 基)章的**原始 HTML**。
@@ -475,9 +605,8 @@ function Moonsync.book_metrics(epub_path)
     return metrics, false
 end
 
--- 静读天下的 *N 按 EPUB 原始 spine itemref 编号；与 book_metrics 的 HTML-only
--- 列表分开保存，避免封面/非 HTML spine 项导致章节索引漂移。非正文资源计 0 字，
--- 但保留槽位；只有可读 HTML 正文加入 Unicode 字符累计。
+-- *N 是导航阅读单元，不是原始 spine 下标；单元可以覆盖多个源文件。
+-- 缓存模型版本必须更新，不能继续使用旧的固定封面偏移结果。
 function Moonsync.moon_book_metrics(epub_path)
     local stamp = ""
     local ok_lfs, lfs = pcall(require, "libs/libkoreader-lfs")
@@ -492,7 +621,9 @@ function Moonsync.moon_book_metrics(epub_path)
         local cached = G_reader_settings:readSetting(cache_key)
         if type(cached) == "table" and type(cached.total) == "number"
                 and type(cached.starts) == "table" and type(cached.html_to_item) == "table"
-                and type(cached.item_count) == "number" and cached.total > 0 then
+                and type(cached.item_count) == "number"
+                and cached.coordinate_version == 2 and type(cached.units) == "table"
+                and type(cached.raw_to_unit) == "table" and cached.total > 0 then
             return cached, true
         end
     end
@@ -504,8 +635,10 @@ function Moonsync.moon_book_metrics(epub_path)
     if not ok_open or not opened then return nil end
     local function close() pcall(function() arc:close() end) end
 
-    local _, base, err, spine_all = spine_of(arc)
+    local _, base, err, spine_all, navigation = spine_of(arc)
     if not spine_all then close(); return nil, err end
+    local units, uerr = moon_units(arc, base, spine_all, navigation)
+    if not units then close(); return nil, uerr end
 
     local starts, html_to_item, total = {}, {}, 0
     local html_index = 0
@@ -527,14 +660,39 @@ function Moonsync.moon_book_metrics(epub_path)
     close()
     if total <= 0 then return nil, "全书字数为 0，读不出正文" end
 
+    local raw_to_unit = {}
+    for u, unit in ipairs(units) do
+        for raw = unit.first, unit.last do raw_to_unit[raw] = u end
+    end
+
     local metrics = {
         total = total,
         starts = starts,
         html_to_item = html_to_item,
         item_count = #spine_all,
+        coordinate_version = 2,
+        units = units,
+        raw_to_unit = raw_to_unit,
     }
     if G_reader_settings then G_reader_settings:saveSetting(cache_key, metrics) end
     return metrics, false
+end
+
+-- HTML 章节映射到 Moon+ 单元，并返回被合并的前置源文件字符数。
+-- 导入、方向提示和写回共用映射，不假设整个 EPUB 有一个固定偏移。
+local function html_to_moon_section(metrics, raw_section)
+    local raw = tonumber(raw_section)
+    if not metrics or not raw or raw < 0 or raw ~= math.floor(raw) then return nil end
+    local item = metrics.html_to_item[raw + 1]
+    local u = item and metrics.raw_to_unit[item]
+    if not u then return nil end
+    return u - 1, metrics.starts[item] - metrics.starts[metrics.units[u].first]
+end
+
+local function moon_unit(metrics, moon_section)
+    local moon = tonumber(moon_section)
+    if not moon or moon < 0 or moon ~= math.floor(moon) then return nil end
+    return metrics.units[moon + 1]
 end
 
 -- 把 Moon+ 的 (spine 序号, 章内字符偏移) 换成整本书正文字符坐标，
@@ -549,15 +707,22 @@ function Moonsync.position_from_po(epub_path, po)
         return nil, "静读天下的章节或字符偏移无效"
     end
 
+    if Txt.is_txt(epub_path) then
+        local profile, perr = Moonsync.get_txt_profile()
+        if not profile then return nil, perr end
+        local model, terr = Txt.read(epub_path)
+        if not model then return nil, terr end
+        return Txt.position(model, po, Moonsync.SNIPPET_LEN, 0.2, profile)
+    end
     local metrics, merr = Moonsync.moon_book_metrics(epub_path)
     if not metrics then return nil, merr or "无法统计本书正文字符" end
-    local section_count = metrics.item_count
-    if star >= section_count then
+    local unit = moon_unit(metrics, star)
+    if unit == nil then
         return nil, string.format("静读天下章节序号 %d 超出本书范围（共 %d 个内容单元）",
-                                  star, section_count)
+                                  star, #metrics.units)
     end
 
-    local start_at, end_at = metrics.starts[star + 1], metrics.starts[star + 2]
+    local start_at, end_at = metrics.starts[unit.first], metrics.starts[unit.last + 1]
     local section_chars = end_at - start_at
     if hash >= section_chars then
         return nil, string.format("章内字符偏移 %d 超出对应内容单元长度 %d", hash, section_chars)
@@ -575,7 +740,7 @@ function Moonsync.position_from_po(epub_path, po)
     -- 以累计字符坐标反查源 EPUB 内容单元，再从同一套紧凑正文字符中取锚点。
     -- 空内容项会有相同的 starts，严格使用半开区间跳过它们。
     local target_index
-    for i = 1, section_count do
+    for i = 1, metrics.item_count do
         if character_offset >= metrics.starts[i]
                 and character_offset < metrics.starts[i + 1] then
             target_index = i
@@ -590,10 +755,14 @@ function Moonsync.position_from_po(epub_path, po)
         if html_index[i] == target_index then html_section = i - 1; break end
     end
     if html_section == nil then return nil, "目标字符所在 spine 项没有可读正文" end
-    local blocks, berr = Moonsync.section_blocks(epub_path, html_section)
-    if not blocks then return nil, berr or "读不出目标正文" end
+    local tagged, berr = Moonsync.section_blocks_tagged(epub_path, html_section)
+    if not tagged then return nil, berr or "读不出目标正文" end
+    local blocks, block_tags = {}, {}
+    for i, block in ipairs(tagged) do
+        blocks[i], block_tags[i] = block.text, block.tag
+    end
     local offset_in_section = character_offset - metrics.starts[target_index]
-    local snippet = Moon.snippet_in_blocks(blocks, offset_in_section, Moonsync.SNIPPET_LEN)
+    local snippet = Moon.snippet_in_blocks(blocks, offset_in_section, Moonsync.SNIPPET_LEN, block_tags)
     if not snippet then return nil, "目标字符附近没有足够的正文可供核对" end
 
     return {
@@ -615,8 +784,19 @@ function Moonsync.local_position(plugin)
     local ok_xp, xp = pcall(doc.getXPointer, doc)
     if not ok_xp or type(xp) ~= "string" or xp == "" then return nil end
 
+    if Txt.is_txt(doc.file) then
+        local profile = Moonsync.get_txt_profile()
+        if not profile then return nil end
+        local model = Txt.read(doc.file)
+        return model and Txt.document_position(model, doc, profile) or nil
+    end
+
     local pos = Moon.parse_xpointer(xp)
     if not pos then return nil end
+
+    local metrics = Moonsync.moon_book_metrics(doc.file)
+    local moon_section, prefix = html_to_moon_section(metrics, pos.section)
+    if moon_section == nil then return nil end
 
     local tagged = Moonsync.section_blocks_tagged(doc.file, pos.section)
     if not tagged then return nil end
@@ -626,11 +806,11 @@ function Moonsync.local_position(plugin)
         -- 页首落在章标题(h1/h2)上时 p_index 为 0,算不出段内偏移。
         -- 这时**只报章节、不报偏移**(hash 为 nil):章节能可靠比较,
         -- 而同章内硬塞一个 0 会给出方向相反的错误提示。
-        if kind == "nop" then return { section = pos.section } end
+        if kind == "nop" then return { section = moon_section } end
         return nil
     end
 
-    return { section = pos.section, hash = hash }
+    return { section = moon_section, hash = prefix + hash }
 end
 
 -- 比较远端与本机位置,给出一句人话方向提示(纯函数,便于测试)。
@@ -691,16 +871,26 @@ function Moonsync.import_from_moon(plugin, opts)
 
     -- 章节和章内偏移只负责还原 Moon+ 原文中的整书字符坐标。
     -- KOReader 侧必须全文唯一命中；章节映射和百分比都不得替代正文验证。
-    local ok_jump, jerr = pcall(function()
+    local function jump()
+      local ok_jump, jerr = pcall(function()
         WebDAV.confirm_jump(plugin, {
             text_anchor       = location.snippet,
             character_percent = location.character_percent,
             require_unique_text = true,
             device_label      = "静读天下",
-        }, { already_confirmed = opts and opts.already_confirmed })
-    end)
-    if not ok_jump then
+        }, { already_confirmed = location.anchor_note ~= nil or (opts and opts.already_confirmed) })
+      end)
+      if not ok_jump then
         show("墨桥：跳转失败（" .. tostring(jerr) .. "）。")
+      end
+    end
+    if location.anchor_note then
+        UIManager:show(ConfirmBox:new{
+            text = location.anchor_note .. "\n\n是否定位到前一段？",
+            ok_text = "退到前段", cancel_text = "取消", ok_callback = jump,
+        })
+    else
+        jump()
     end
 end
 
@@ -804,21 +994,52 @@ end
 function Moonsync._do_push(plugin, job, opts)
     local silent = opts and opts.silent
     local server = plugin.server
+    if job.format == "txt" then
+        local file = plugin.ui and plugin.ui.document and plugin.ui.document.file
+        local filename = Txt.is_txt(file) and Moon.po_filename(file)
+        local expected_url = filename and Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename)
+        if not filename or job.filename ~= filename or job.url ~= expected_url then
+            return false, "TXT 未写入：目标路径与当前书不一致"
+        end
+        -- 备份/PUT 之前重新 GET，避免准备期间对端已上传新进度时仍覆盖旧快照。
+        local ok, code, _, body = pcall(Moonsync.request, server, job.url, "GET")
+        if not ok or code ~= 200 or type(body) ~= "string" or body ~= job.old_body then
+            return false, "TXT 未写入：原云端进度已变化或无法重新核对"
+        end
+    end
     local where = string.format("第 %d 章，章内偏移 %d", job.section, job.hash)
     -- 给用户看的那一句只留章节号:"章内偏移"是内部口径,对读者没有意义。
     local short_where = string.format("第 %d 章", job.section)
+    if job.format == "txt" then
+        where = string.format("TXT 整书字符偏移 %d", job.hash)
+        short_where = "TXT " .. job.pct_note
+    end
 
     local backup_path = nil
     if job.old_body then
-        backup_path = Moonsync.backup_po(plugin, job.filename, job.old_body)
+        if job.format == "txt" then
+            local ok, path = pcall(Moonsync.backup_po, plugin, job.filename, job.old_body)
+            if ok then backup_path = path end
+        else backup_path = Moonsync.backup_po(plugin, job.filename, job.old_body) end
+    end
+    if job.format == "txt" and not backup_path then
+        local brief = "TXT 未写入：原云端进度备份失败"
+        if not silent then show("墨桥：" .. brief .. "，云端未改动。") end
+        return false, brief
     end
     local backup_tail = backup_path and ("\n备份：" .. backup_path) or ""
 
-    local code, status, _, err = Moonsync.request(server, job.url, "PUT", job.body)
+    local function request(method, body)
+        if job.format ~= "txt" then return Moonsync.request(server, job.url, method, body) end
+        local ok, code, status, result, err = pcall(Moonsync.request, server, job.url, method, body)
+        if not ok then return nil, nil, nil, "请求异常，请重新读取云端确认状态" end
+        return code, status, result, err
+    end
+    local code, status, _, err = request("PUT", job.body)
     if not code then
         local brief = "写入失败（静读天下：" .. tostring(err) .. "）"
         if not silent then
-            show("墨桥：" .. brief .. "\n云端内容未被改动。" .. backup_tail)
+            show("墨桥：" .. brief .. (job.format == "txt" and "\n请重新读取云端确认状态。" or "\n云端内容未被改动。") .. backup_tail)
         end
         return false, brief
     end
@@ -831,7 +1052,8 @@ function Moonsync._do_push(plugin, job, opts)
     end
 
     -- 只看回读的正文(第 1、2 个返回值是状态码与状态文本,这里用不上)
-    local _, _, body = Moonsync.request(server, job.url, "GET")
+    local verify_code, _, body = request("GET")
+    if job.format == "txt" and verify_code ~= 200 then body = nil end
     if type(body) == "string" then body = body:gsub("[\r\n]+$", "") end
 
     local verified = (type(body) == "string" and body == job.body)
@@ -880,6 +1102,36 @@ end
 -- 返回 job 表;或 nil + 人话原因 + 类别:
 --   "skip"  = 这次本来就不适用(没开书 / 停在标题上 / 格式不支持),不必打扰用户
 --   "error" = 该让用户知道的问题
+function Moonsync.build_txt_push_job(plugin)
+    local doc = plugin.ui.document
+    local profile, configerr = Moonsync.get_txt_profile()
+    if not profile then return nil, configerr, "error" end
+    local model, merr = Txt.read(doc.file)
+    if not model then return nil, merr, "error" end
+    local pos, perr = Txt.document_position(model, doc, profile)
+    if not pos then return nil, perr, "error" end
+    -- TXT 必须先有 Moon+ 实际生成的同书记录；不借其他书的账号常量创建未知坐标模型。
+    local old_body, ferr = Moonsync.fetch_po(plugin)
+    local old = old_body and Moon.parse(old_body)
+    if not old then return nil, "TXT 写回前无法读取有效原进度（" .. tostring(ferr or "格式无效") .. "）", "error" end
+    local old_pos, oerr = Txt.position(model, old, Moonsync.SNIPPET_LEN, 0.2, profile)
+    if not old_pos then return nil, "TXT 原云端坐标无法核对（" .. tostring(oerr) .. "）", "error" end
+    local pct = pos.hash / pos.total * 100
+    local filename = Moon.po_filename(doc.file)
+    return {
+        url = Moon.build_url(plugin.server.address, plugin.server.url, Moonsync.get_dir(), filename),
+        body = Moon.format(old.book_ref, 0, pos.hash, pct, old.at),
+        old_body = old_body,
+        old_line = old_body:gsub("[\r\n]+$", ""),
+        filename = filename,
+        section = 0,
+        hash = pos.hash,
+        checked = pos.checked,
+        pct_note = string.format("%.2f%%（原文分块＋显示块内偏移）", pct),
+        format = "txt",
+    }
+end
+
 function Moonsync.build_push_job(plugin)
     local doc = plugin and plugin.ui and plugin.ui.document
     if not doc or type(doc.file) ~= "string" then
@@ -893,10 +1145,22 @@ function Moonsync.build_push_job(plugin)
         return nil, "这本书的格式取不到阅读位置", "skip"
     end
 
+    if Txt.is_txt(doc.file) then return Moonsync.build_txt_push_job(plugin) end
+
     local xp = doc:getXPointer()
     local pos, perr = Moon.parse_xpointer(xp)
     if not pos then
         return nil, "读不出当前阅读位置（" .. tostring(perr) .. "）", "error"
+    end
+
+    -- 先映射到导航阅读单元；章内偏移还要加上同单元前置文件的字符数。
+    local moon_metrics, moon_merr = Moonsync.moon_book_metrics(doc.file)
+    if not moon_metrics then
+        return nil, "无法读取本书的静读天下章节映射（" .. tostring(moon_merr or "未知原因") .. "）", "error"
+    end
+    local moon_section, unit_prefix = html_to_moon_section(moon_metrics, pos.section)
+    if moon_section == nil then
+        return nil, "当前页无法可靠对应静读天下阅读单元", "skip"
     end
 
     local tagged, berr = Moonsync.section_blocks_tagged(doc.file, pos.section)
@@ -956,12 +1220,12 @@ function Moonsync.build_push_job(plugin)
     local filename = Moon.po_filename(doc.file)
     return {
         url         = Moon.build_url(server.address, server.url, Moonsync.get_dir(), filename),
-        body        = Moon.format(book_ref, pos.section, hash, pct, at),
+        body        = Moon.format(book_ref, moon_section, unit_prefix + hash, pct, at),
         old_body    = old_body,
         old_line    = old_body and (old_body:gsub("[\r\n]+$", "")) or nil,
         filename    = filename,
-        section     = pos.section,
-        hash        = hash,
+        section     = moon_section,
+        hash        = unit_prefix + hash,
         p_index     = pos.p_index,
         text_offset = pos.text_offset,
         checked     = checked,

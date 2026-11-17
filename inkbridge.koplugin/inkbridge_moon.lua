@@ -263,9 +263,12 @@ end
 -- **关键:片段必须落在同一个块内。** 之前是从"整章去空白后的连续文本"里切的,
 -- 片段可能横跨两段;而渲染出来的正文在段与段之间是断开的,全文搜索必然搜不到 ——
 -- 实测表现就是"搜索没命中、掉到百分比兜底、落点差很远"。
--- 若该位置离块尾太近(取不满 6 个字),就在块内往前借几个字;仍不够则返回 nil
+-- 若该位置离块尾太近(取不满 6 个字),就在块内往前借几个字;若目标正好在短块开头
+-- (常见于 3 字卷名后紧跟章节标题),则从本章后续第一个够长的块取锚点。
+-- 提供 block_tags 时只顺延到 p 正文段落,避免标题中的 br/span 被拼成不可搜索的词。
+-- 仍不够则返回 nil
 -- (宁可如实报"定位不到",也不要拿一个搜不到的片段去碰运气)。
-function Moon.snippet_in_blocks(blocks, offset, want)
+function Moon.snippet_in_blocks(blocks, offset, want, block_tags)
     want = want or 20
     local idx, off = Moon.locate(blocks, offset)
     if not idx then return nil end
@@ -279,6 +282,16 @@ function Moon.snippet_in_blocks(blocks, offset, want)
         local borrow = math.min(6 - take, start)
         start = start - borrow
         take = take + borrow
+    end
+    if take < 6 and off == 0 then
+        -- 坐标确实落在这个短块开头时,该块本身无法形成可靠搜索词。
+        -- 顺延到同章后续块,避免卷名/分部名(如"旅行家")让整次导入直接失败。
+        for i = idx + 1, #blocks do
+            local next_text = blocks[i]
+            if (not block_tags or block_tags[i] == "p") and Moon.utf8_len(next_text) >= 6 then
+                return Moon.utf8_sub(next_text, 1, math.min(want, Moon.utf8_len(next_text)))
+            end
+        end
     end
     if take < 6 then return nil end
     return Moon.utf8_sub(text, start + 1, take)
