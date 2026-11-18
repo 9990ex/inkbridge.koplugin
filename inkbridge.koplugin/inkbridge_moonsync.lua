@@ -878,6 +878,7 @@ function Moonsync.import_from_moon(plugin, opts)
             character_percent = location.character_percent,
             require_unique_text = true,
             device_label      = "静读天下",
+            home_note         = location.anchor_note,
         }, { already_confirmed = location.anchor_note ~= nil or (opts and opts.already_confirmed) })
       end)
       if not ok_jump then

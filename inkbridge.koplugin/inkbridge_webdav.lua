@@ -960,6 +960,12 @@ function WebDAV.confirm_jump(plugin, remote, opts)
     local ui = plugin.ui
     if not ui or not ui.document then return end
 
+    -- 缓存的是「读取到的远端位置」，不是声称已经采用；取消也可留作接缝比对。
+    if not (opts and opts.home_replay) then
+        require("inkbridge_home_history").observe(plugin, remote,
+            remote.device_label == "静读天下" and "静读天下" or ("墨桥 · " .. tostring(remote.device_label or "远端")))
+    end
+
     local plan, reason = WebDAV._plan_jump(plugin, remote)
     if not plan then
         -- already_confirmed 时调用方只想要"跳过去",失败也必须说出来

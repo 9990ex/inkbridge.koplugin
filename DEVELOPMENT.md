@@ -32,6 +32,7 @@ KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自�
 | `tests/main_spec.lua` | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII**、**云端历史保留策略**、**设备名探测与截断** |
 | `tests/state_spec.lua` | 文本锚点规范化（UTF-8 按字符计数、**xpointer 字符偏移**）、阅读位置采集、记录校验与向后兼容、紧凑载荷的结构与体积 |
 | `tests/update_spec.lua` | 版本号比较与 release 页面解析 |
+| `tests/home_spec.lua` | 首页正文缓存上限、去重、书籍版本、三书选择、启动设置恢复、时钟生命周期和唯一锚点重放 |
 
 > 断言**条数刻意不写在这里**：每加一条测试它就会变，这张表曾经因此烂掉过一版
 > （还留着早就不存在的文件与对不上的数字）。权威数字在 [`AGENTS.md`](AGENTS.md) 的
@@ -40,7 +41,7 @@ KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自�
 在仓库根目录执行(需要 LuaJIT —— 与 KOReader 运行时同款,LuaJIT 官网或包管理器都能装):
 
 ```bash
-sh tests/run_all.sh            # 一次跑完七份;任何一份崩掉都会被判为失败
+sh tests/run_all.sh            # 一次跑完八份;任何一份崩掉都会被判为失败
 # 或者单跑:
 luajit tests/moon_spec.lua
 luajit tests/moontxt_spec.lua
@@ -49,6 +50,7 @@ luajit tests/webdav_spec.lua
 luajit tests/main_spec.lua
 luajit tests/state_spec.lua
 luajit tests/update_spec.lua
+luajit tests/home_spec.lua
 ```
 
 Windows 上可 `winget install DEVCOM.LuaJIT`,装完在

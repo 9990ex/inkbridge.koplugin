@@ -1359,6 +1359,22 @@ do
     eq("  此时也不该发出删除请求", p6.ui.cloudstorage.providers.webdav.base, nil)
 end
 
+do
+    local History = require("inkbridge_home_history")
+    local old_observe, old_plan = History.observe, WebDAV._plan_jump
+    local sources = {}
+    History.observe = function(_, _, source) sources[#sources + 1] = source end
+    WebDAV._plan_jump = function() return nil, "not_found" end
+    local plugin = { ui = { document = { file = "book.epub" } } }
+    WebDAV.confirm_jump(plugin, { text_anchor = "原文", device_label = "静读天下" })
+    eq("读取静读天下正文可缓存但不代表采用", sources[1], "静读天下")
+    WebDAV.confirm_jump(plugin, { text_anchor = "原文", device_label = "Kindle" })
+    eq("墨桥远端保留设备来源", sources[2], "墨桥 · Kindle")
+    WebDAV.confirm_jump(plugin, { text_anchor = "原文" }, { home_replay = true })
+    eq("首页重放不重复采集历史", #sources, 2)
+    History.observe, WebDAV._plan_jump = old_observe, old_plan
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end
 print("全部通过。")

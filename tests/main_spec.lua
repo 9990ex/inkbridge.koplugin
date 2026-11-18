@@ -342,7 +342,7 @@ do
     local menu_items = {}
     plugin:addToMainMenu(menu_items)
     local menu = menu_items.inkbridge.sub_item_table_func()
-    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.9-alpha")
+    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.10-alpha")
     local status_index = item_index(menu, "同步状态")
     local upload_index = item_index(menu, "上传阅读进度")
     check("同步状态排在上传前", status_index and upload_index and status_index < upload_index)
@@ -607,6 +607,30 @@ do
     local weird = name_for("OnePlus 13/LE2110")
     check("非法字符被替换", weird:find("/", 1, true) == nil, weird)
     contains("空格保留(文件名允许)", weird, "OnePlus 13_LE2110")
+end
+
+do
+    local History = require("inkbridge_home_history")
+    local old_observe, old_write, old_upload = History.observe, State.write_file, WebDAV.upload
+    local Moonsync = require("inkbridge_moonsync")
+    local old_auto = Moonsync.auto_push
+    local cached, source = 0
+    History.observe = function(_, entry, from) cached = cached + 1; source = from end
+    State.write_file = function() return true end
+    Moonsync.auto_push = function() return nil end
+    local plugin = new_plugin{
+        _staging_dir = function() return SETTINGS_DIR end,
+        _prune_history = function(_, _, _, cb) if cb then cb(0) end end,
+    }
+    local entry = { book_id = "deadbeef", book_name = "书", text_anchor = "真实同步正文" }
+    WebDAV.upload = function(_, _, cb) cb(false, "upload failed") end
+    plugin:_sync(entry, "upload")
+    eq("上传失败不产生首页记录", cached, 0)
+    WebDAV.upload = function(_, _, cb) cb(true) end
+    plugin:_sync(entry, "upload")
+    eq("成功上传才采集首页正文", cached, 1)
+    eq("上传来源不冒充静读天下", source, "墨桥 · 本机上传")
+    History.observe, State.write_file, WebDAV.upload, Moonsync.auto_push = old_observe, old_write, old_upload, old_auto
 end
 
 -- 收尾：清掉测试用的设置目录

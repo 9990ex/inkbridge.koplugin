@@ -6,7 +6,7 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（1200 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（1259 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
@@ -14,9 +14,10 @@
    luajit tests/moontxt_spec.lua    # 149 条  TXT 编码、UTF-16 分块显示坐标、短段确认回退与反向核对
    luajit tests/moonsync_spec.lua   # 392 条  静读天下互通（读、写、上传设备来源、平台、目录换算、导航单元与字符坐标）
    luajit tests/update_spec.lua     #  48 条  版本比较与 release 解析
-   luajit tests/webdav_spec.lua     # 270 条  云存储层（上传/下载/列目录/借云浏览器选目录/删除/唯一锚点跳转与首行核算/推迟执行）
-   luajit tests/main_spec.lua       #  97 条  主流程、保留策略、设备名探测、同步状态页、首次 Moon+ 下载
+   luajit tests/webdav_spec.lua     # 273 条  云存储层与首页远端正文采集、重放去重
+   luajit tests/main_spec.lua       # 100 条  主流程、保留策略、设备名探测、同步状态页、首次 Moon+ 下载、上传成功才采集
    luajit tests/state_spec.lua      #  81 条  位置记录本身
+   luajit tests/home_spec.lua       #  53 条  三书九条正文、缓存上限、启动恢复、时钟生命周期、全屏刷新、原生设置与安全重放
    ```
 
    全绿才算过。需要 LuaJIT（与 KOReader 运行时同款）。新增 spec 请一并写进

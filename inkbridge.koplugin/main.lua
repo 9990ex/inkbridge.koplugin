@@ -130,6 +130,8 @@ function InkBridge:init()
     if self.ui and self.ui.menu then
         self.ui.menu:registerToMainMenu(self)
     end
+    -- 首页独立、按需加载；默认不改变原有启动选择。
+    if self.ui and not self.ui.document then require("inkbridge_home").attach(self) end
 end
 
 -- WebDAV 同步服务要求我们先提供一个本地文件。
@@ -347,6 +349,7 @@ function InkBridge:_sync(entry, mode)
         -- 才真正读完该文件；且回调只会触发一次（WebDAV.upload 内部有去重）。
         os.remove(history_path)
         if upload_ok then
+            require("inkbridge_home_history").observe(self, entry, "墨桥 · 本机上传")
             -- 顺手把进度写进静读天下的 .po:上传本身就是在声明"我这边是最新的",
             -- 静读天下因此能无感跟随,不必再多点一次按键。
             -- 整段用 pcall 包住:写回失败绝不能影响"上传成功"这个结论。
@@ -959,7 +962,9 @@ function InkBridge:addToMainMenu(menu_items)
             table.insert(items, { text = "高级选项",
                                   sub_item_table_func = function()
                                       return self:_advanced_menu()
-                                  end })
+                                   end })
+            table.insert(items, { text = "打开墨桥首页",
+                                  callback = function() require("inkbridge_home").show(self) end })
             return items
         end,
     }
@@ -968,6 +973,9 @@ end
 -- 用户卸载插件时清理 InkBridge 自己保存的设置。
 -- 这里只删除设置，不删除书籍、.sdr 或 Moon+ 文件。
 function InkBridge:deletePluginSettings()
+    require("inkbridge_home").setAuto(false)
+    G_reader_settings:delSetting("inkbridge_home_auto")
+    G_reader_settings:delSetting("inkbridge_home_history")
     G_reader_settings:delSetting("inkbridge_device_id")
     G_reader_settings:delSetting("inkbridge_device_label")
     G_reader_settings:delSetting("inkbridge_webdav_server")
