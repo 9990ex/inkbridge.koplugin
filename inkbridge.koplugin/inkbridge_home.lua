@@ -142,6 +142,26 @@ function Home.show(plugin)
     local books = History.recent(require("readhistory").hist, function(file)
         return require("libs/libkoreader-lfs").attributes(file, "mode") == "file"
     end)
+    content[#content + 1] = Button:new{
+        text = "读取同步历史（只读）", width = width, text_font_size = 17,
+        callback = function()
+            local Sync = require("inkbridge_home_sync")
+            if Sync.running then
+                UIManager:show(InfoMessage:new{ text = "正在读取同步历史，请稍候。", timeout = 2 })
+                return
+            end
+            local progress = InfoMessage:new{ text = "正在读取最近三本的同步历史，不会跳转或修改云端。" }
+            UIManager:show(progress)
+            Sync.refresh(plugin, books, function(ok, message)
+                UIManager:close(progress)
+                if Home.instance == page then
+                    page:leave()
+                    Home.show(plugin)
+                end
+                UIManager:show(InfoMessage:new{ text = message, timeout = ok and 5 or 8 })
+            end)
+        end,
+    }
     content[#content + 1] = text("最近三本 · 每本最近三条同步正文\n上下滑动查看；点正文核对并跳转。", 16)
     content[#content + 1] = VerticalSpan:new{ width = pad }
     for _, book in ipairs(books) do
@@ -166,7 +186,7 @@ function Home.show(plugin)
             content[#content + 1] = row
         end
         if #b.records == 0 then
-            content[#content + 1] = text("暂无同步正文。打开本书后下载进度，或成功上传一次，才会出现真实记录。", 16)
+            content[#content + 1] = text("暂无缓存。点上方「读取同步历史」补全已有云端记录。", 16)
         end
         content[#content + 1] = VerticalSpan:new{ width = pad }
     end

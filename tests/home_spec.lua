@@ -225,5 +225,26 @@ Home.instance:leave()
 Home.setAuto(false)
 check("关闭功能即时恢复原生Home", plugin.ui:onHome("restored") == "native-home" and native_arg == "restored")
 
+local sync_calls, sync_done = 0
+local sync = { refresh = function(_, selected, cb)
+    sync_calls = sync_calls + 1; sync_done = cb
+    check("刷新只传首页最近三本", #selected <= 3 and selected[1].file == "real.epub")
+end }
+package.preload.inkbridge_home_sync = function() return sync end
+buttons = {}
+Home.show(plugin)
+check("打开首页本身不后台读取", sync_calls == 0)
+button("读取同步历史（只读）").callback()
+check("读取按钮接入真实补全模块", sync_calls == 1 and sync_done ~= nil)
+local refreshing_page = Home.instance
+sync_done(true, "读取完成")
+check("读取完成重建当前首页", Home.instance ~= refreshing_page and Home.instance ~= nil)
+Home.instance:leave()
+buttons = {}; Home.show(plugin)
+button("读取同步历史（只读）").callback()
+Home.instance:leave()
+sync_done(true, "读取完成")
+check("读取期间离开不强制重开首页", Home.instance == nil)
+
 print(string.format("合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)
