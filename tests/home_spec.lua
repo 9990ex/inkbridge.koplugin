@@ -136,9 +136,17 @@ local jumped
 package.preload.inkbridge_webdav = function() return {
     confirm_jump = function(plugin, remote, opts) jumped = { plugin, remote, opts } end,
 } end
-local plugin = { ui = {}, _advanced_menu = function() return {} end }
+local native_homes, native_arg = 0
+local plugin = { ui = { onHome = function(_, arg)
+    native_homes = native_homes + 1; native_arg = arg; return "native-home"
+end }, _advanced_menu = function() return {} end }
 Home.attach(plugin)
 check("默认不抢启动", #next_ticks == 0)
+check("关闭首页时保留原生Home返回值", plugin.ui:onHome("original") == "native-home")
+check("关闭首页保留原参数", native_homes == 1 and native_arg == "original")
+local routed_home = plugin.ui.onHome
+Home.attach(plugin)
+check("重复attach不层叠Home补丁", plugin.ui.onHome == routed_home)
 Home.setAuto(true)
 Home.attach(plugin)
 check("启用延迟显示", #next_ticks == 1)
@@ -210,6 +218,12 @@ buttons = {}
 Home.show(plugin)
 button("书库").callback()
 check("书库按钮关闭首页", Home.instance == nil)
+buttons = {}
+check("原生房子入口已消费事件", plugin.ui:onHome() == true)
+check("原生房子入口打开墨桥而非主目录", Home.instance and Home.instance.name == "inkbridge_home" and native_homes == 1)
+Home.instance:leave()
+Home.setAuto(false)
+check("关闭功能即时恢复原生Home", plugin.ui:onHome("restored") == "native-home" and native_arg == "restored")
 
 print(string.format("合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)

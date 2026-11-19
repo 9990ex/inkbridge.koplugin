@@ -342,7 +342,7 @@ do
     local menu_items = {}
     plugin:addToMainMenu(menu_items)
     local menu = menu_items.inkbridge.sub_item_table_func()
-    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.11-alpha")
+    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.12-alpha")
     local status_index = item_index(menu, "同步状态")
     local upload_index = item_index(menu, "上传阅读进度")
     check("同步状态排在上传前", status_index and upload_index and status_index < upload_index)

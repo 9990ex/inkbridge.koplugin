@@ -23,6 +23,20 @@ end
 
 function Home.attach(plugin)
     if not plugin.ui or plugin.ui.document then return end
+    local fm = plugin.ui
+    -- 只挂接当前文件管理器实例的 Home 动作，不修改共享类或主目录设置。
+    -- 书库仍是原生文件管理器，但左上角房子／Home 键应能回到墨桥首页。
+    if not fm._inkbridge_home_route and type(fm.onHome) == "function" then
+        local native_home = fm.onHome
+        fm._inkbridge_home_route = true
+        fm.onHome = function(self, ...)
+            if G_reader_settings:readSetting(Home.AUTO) then
+                Home.show(plugin)
+                return true
+            end
+            return native_home(self, ...)
+        end
+    end
     if not Home.pending and not (G_reader_settings:readSetting(Home.AUTO)
             and G_reader_settings:readSetting("start_with") == "filemanager") then return end
     Home.pending = nil
