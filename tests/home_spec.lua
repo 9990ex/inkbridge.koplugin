@@ -90,7 +90,12 @@ function Widget:new(o)
 end
 function Widget:getSize() return { w = self.width or 400, h = 35 } end
 function Widget:setText(s) self.text = s end
-function Widget:scrollToRatio(_, y) self.last_ratio = y end
+function Widget:scrollToRatio(_, y)
+    -- 保留原生 API 的裁剪高度前提，不能再用无条件成功的桩掩盖 nil 算术。
+    self._scroll_offset_y = math.max(0, y * (self._max_scroll_offset_y + self._crop_h)
+        - math.floor(self._crop_h / 2 + 0.5))
+    self.last_ratio = y
+end
 local UI = {
     show = function(_, w) shown[#shown + 1] = w end,
     close = function(_, w, refresh) close_refresh = refresh; if w.onCloseWidget then w:onCloseWidget() end end,
@@ -152,8 +157,22 @@ check("唤醒恢复时钟", scheduled[page.tick] ~= nil)
 local function button(label)
     for _, b in ipairs(buttons) do if b.text == label then return b end end
 end
+local viewport = page.cropping_widget
+check("未绘制前点击首页不崩溃", pcall(button("首页").callback))
+check("未初始化不调用滚动", viewport.last_ratio == nil)
+viewport._is_scrollable = false
+viewport._max_scroll_offset_y = 0
+check("不足一屏反复点首页不崩溃", pcall(function()
+    for _ = 1, 3 do button("首页").callback() end
+end))
+check("不足一屏不调用滚动", viewport.last_ratio == nil)
+viewport._is_scrollable = true
+check("裁剪高度缺失安全跳过", pcall(button("首页").callback) and viewport.last_ratio == nil)
+viewport._crop_h = 500
+viewport._max_scroll_offset_y = 1000
+viewport._scroll_offset_y = 400
 button("首页").callback()
-check("首页导航滚到顶部", page.cropping_widget.last_ratio == 0)
+check("可滚动首页导航回到顶部", viewport.last_ratio == 0 and viewport._scroll_offset_y == 0)
 button("设置").callback()
 check("设置打开暂停时钟", scheduled[page.tick] == nil)
 UI:close(shown[#shown])

@@ -195,7 +195,15 @@ function Home.show(plugin)
         UIManager:show(dialog)
     end
     local nav = ButtonTable:new{ width = width, buttons = {{
-        { text = "首页", callback = function() page.cropping_widget:scrollToRatio(nil, 0) end },
+        { text = "首页", callback = function()
+            local viewport = page.cropping_widget
+            -- 原生容器在内容不足一屏时不创建 _crop_h；未绘制时也尚未初始化。
+            -- 这两种情况已经在顶部，无需调用要求裁剪尺寸的 scrollToRatio。
+            if viewport and viewport._is_scrollable == true
+                    and type(viewport._crop_h) == "number" and viewport._crop_h > 0 then
+                viewport:scrollToRatio(nil, 0)
+            end
+        end },
         { text = "书库", callback = function() page:leave() end },
         { text = "设置", callback = settings },
     }} }
