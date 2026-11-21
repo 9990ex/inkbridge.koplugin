@@ -804,16 +804,16 @@ end
 
 function InkBridge:_do_check_update()
     local ok_http, http   = pcall(require, "socket.http")
-    local ok_sock, socket = pcall(require, "socket")
     local ok_ltn12, ltn12 = pcall(require, "ltn12")
-    if not (ok_http and ok_sock and ok_ltn12) then
+    if not (ok_http and ok_ltn12) then
         show("墨桥：本机缺少网络模块，无法检查更新。")
         return
     end
 
-    local sink, code
-    local ok = pcall(function()
-        code = tonumber(socket.skip(1, http.request{
+    -- 必须持有接收表；ltn12 内部临时创建的表不会自动赋回 sink。
+    local sink, code, request_error = {}, nil, nil
+    local ok, err = pcall(function()
+        local result, status = http.request{
             url    = Update.API_URL,
             method = "GET",
             sink   = ltn12.sink.table(sink),
@@ -822,12 +822,17 @@ function InkBridge:_do_check_update()
                 ["User-Agent"] = "inkbridge-koplugin",
                 ["Accept"]     = "application/vnd.github+json",
             },
-        }))
+        }
+        -- request 还会返回 headers/status；先接住状态码，避免把 headers
+        -- 透传成 tonumber 的进制参数，导致 HTTP 200 也被误报成连接失败。
+        code = tonumber(status)
+        if not code then request_error = status or result or "未返回 HTTP 状态码" end
     end)
     local body = type(sink) == "table" and table.concat(sink) or ""
 
     if not ok or not code then
-        show("墨桥：连不上 GitHub，检查更新失败。\n项目主页：" .. Update.HOMEPAGE)
+        show("墨桥：GitHub 更新请求失败（" .. tostring(ok and request_error or err)
+            .. "）。\n项目主页：" .. Update.HOMEPAGE)
         return
     end
     if code ~= 200 then

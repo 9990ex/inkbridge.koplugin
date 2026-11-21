@@ -354,7 +354,7 @@ do
     local menu_items = {}
     plugin:addToMainMenu(menu_items)
     local menu = menu_items.inkbridge.sub_item_table_func()
-    eq("顶层页签显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.19-alpha")
+    eq("顶层页签显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v" .. require("_meta").version)
     eq("墨桥页签使用汉字桥图标", menu_items.inkbridge.icon, "inkbridge-bridge")
     eq("菜单入口不再指定工具子菜单", menu_items.inkbridge.sorting_hint, nil)
     local status_index = item_index(menu, "同步状态")
@@ -730,6 +730,99 @@ do
     eq("离线关书不派发上传", uploads, 1, shown[#shown].text)
     contains("离线关书明确提示未上传", shown[#shown].text, "未上传云端")
     connected = true
+end
+
+-- ============================================================================
+print("== 10. 检查更新的完整请求流程 ==")
+-- ============================================================================
+do
+    local module_names = { "socket.http", "socket", "ltn12", "rapidjson" }
+    local saved = {}
+    for _, name in ipairs(module_names) do saved[name] = package.loaded[name] end
+    local request, decoded, request_count, response_body = nil, nil, 0, '{"tag_name":"v0.3.21-alpha"}'
+    local mode = "success"
+    package.loaded["socket"] = { skip = function(n, ...) return select(n + 1, ...) end }
+    package.loaded["ltn12"] = { sink = { table = function(buffer)
+        -- 与真实 ltn12 一样：未传表时内部新建，但调用方必须持有它才能读取正文。
+        buffer = buffer or {}
+        return function(chunk)
+            if chunk then buffer[#buffer + 1] = chunk end
+            return 1
+        end, buffer
+    end } }
+    package.loaded["socket.http"] = { request = function(req)
+        request_count = request_count + 1
+        request = req
+        if mode == "exception" then error("TLS handshake failed") end
+        req.sink(response_body:sub(1, 12))
+        req.sink(response_body:sub(13))
+        req.sink(nil)
+        if mode == "timeout" then return nil, "timeout" end
+        if mode == "forbidden" then return 1, 403, {}, "HTTP/1.1 403 Forbidden" end
+        if mode == "missing" then return 1, 404, {}, "HTTP/1.1 404 Not Found" end
+        -- headers 和 status 不能被透传成 tonumber 的第二、第三个参数。
+        return 1, "200", { ["content-type"] = "application/json" }, "HTTP/1.1 200 OK"
+    end }
+    package.loaded["rapidjson"] = { decode = function(body)
+        decoded = body
+        if mode == "invalid_json" then error("bad json") end
+        return { tag_name = "v0.3.21-alpha", assets = {
+            { name = "inkbridge.moon.koplugin-v0.3.21-alpha.zip",
+              browser_download_url = "https://example.com/update.zip" },
+        } }
+    end }
+    local function run(check_network)
+        shown, last_keyvalue, decoded = {}, nil, nil
+        if check_network then new_plugin():check_update() else new_plugin():_do_check_update() end
+        return shown[#shown] and shown[#shown].text or ""
+    end
+
+    connected = true
+    run(true)
+    eq("更新请求只发送一次", request_count, 1)
+    eq("更新请求使用固定官方 API", request and request.url, require("inkbridge_update").API_URL)
+    eq("更新请求只读", request and request.method, "GET")
+    eq("更新请求带 User-Agent", request and request.headers["User-Agent"], "inkbridge-koplugin")
+    eq("更新请求带 GitHub JSON 类型", request and request.headers.Accept, "application/vnd.github+json")
+    eq("HTTP 200 的多返回值不误报网络失败", last_keyvalue and last_keyvalue.title, "墨桥 · 检查更新")
+    eq("多个数据块完整进入 JSON 解码器", decoded, response_body)
+    eq("更新页面显示返回版本", row_value(last_keyvalue and last_keyvalue.kv_pairs, "最新版本"), "v0.3.21-alpha")
+    eq("新版本页面显示安装包地址", row_value(last_keyvalue and last_keyvalue.kv_pairs, "下载地址"), "https://example.com/update.zip")
+
+    mode = "timeout"
+    local text = run()
+    eq("超时不打开更新页面", last_keyvalue, nil)
+    eq("失败时不解码残留的部分正文", decoded, nil)
+    contains("超时保留诊断原因", text, "timeout")
+
+    mode = "exception"
+    text = run()
+    eq("网络库抛异常不崩溃、不打开页面", last_keyvalue, nil)
+    contains("网络异常保留诊断原因", text, "TLS handshake failed")
+
+    mode = "forbidden"
+    text = run()
+    contains("HTTP 403 显示服务器状态", text, "403")
+    eq("HTTP 403 不作为版本正文解码", decoded, nil)
+    mode = "missing"
+    contains("HTTP 404 显示服务器状态", run(), "404")
+
+    mode = "invalid_json"
+    text = run()
+    contains("HTTP 200 的坏 JSON 提示解析失败", text, "没能读懂")
+    eq("坏 JSON 不打开更新页面", last_keyvalue, nil)
+
+    mode, connected, wifi_prompt = "success", false, nil
+    local before = request_count
+    run(true)
+    eq("离线时不直接请求 GitHub", request_count, before)
+    check("离线检查沿用联网确认", type(wifi_prompt) == "function")
+    connected = true
+    if wifi_prompt then wifi_prompt() end
+    eq("联网确认后才发送请求", request_count, before + 1)
+    eq("联网确认后的正文仍完整", decoded, response_body)
+
+    for _, name in ipairs(module_names) do package.loaded[name] = saved[name] end
 end
 
 -- 收尾：清掉测试用的设置目录
