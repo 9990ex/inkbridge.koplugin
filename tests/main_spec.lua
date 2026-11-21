@@ -59,7 +59,19 @@ end
 local SETTINGS_DIR = (os.getenv("TEMP") or "/tmp")
     .. (is_windows and "\\" or "/") .. "ib-spec-settings"
 package.preload["datastorage"] = function()
-    return { getSettingsDir = function() return SETTINGS_DIR end }
+    return {
+        getSettingsDir = function() return SETTINGS_DIR end,
+        getDataDir = function() return SETTINGS_DIR .. (is_windows and "\\data" or "/data") end,
+    }
+end
+package.preload["libs/libkoreader-lfs"] = function()
+    return { attributes = function(path, mode)
+        if mode ~= "file" then return nil end
+        local file = io.open(path, "rb")
+        if not file then return nil end
+        file:close()
+        return "file"
+    end }
 end
 package.preload["util"] = function()
     return {
@@ -342,10 +354,60 @@ do
     local menu_items = {}
     plugin:addToMainMenu(menu_items)
     local menu = menu_items.inkbridge.sub_item_table_func()
-    eq("一级菜单显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.13-alpha")
+    eq("顶层页签显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v0.3.19-alpha")
+    eq("墨桥页签使用汉字桥图标", menu_items.inkbridge.icon, "inkbridge-bridge")
+    eq("菜单入口不再指定工具子菜单", menu_items.inkbridge.sorting_hint, nil)
     local status_index = item_index(menu, "同步状态")
     local upload_index = item_index(menu, "上传阅读进度")
     check("同步状态排在上传前", status_index and upload_index and status_index < upload_index)
+    local menu_tabs = {
+        { icon = "appbar.navigation" },
+        { icon = "appbar.tools", menu_items.inkbridge },
+    }
+    menu_items.inkbridge.id = "inkbridge"
+    local mock_menu = { tab_item_table = menu_tabs }
+    check("菜单排序后提升为独立顶层页签", InkBridge._promote_menu_tab(mock_menu)
+        and menu_tabs[#menu_tabs].icon == "inkbridge-bridge")
+    check("提升后从工具页签列表移除", #menu_tabs[2] == 0)
+    eq("提升保留桥字图标", menu_tabs[#menu_tabs].icon, "inkbridge-bridge")
+    eq("独立页签保留插件菜单首项", menu_tabs[#menu_tabs][1].text, menu[1].text)
+    check("重复刷新不会重复插入页签", not InkBridge._promote_menu_tab(mock_menu) and #menu_tabs == 3)
+    local menu_show_calls, rebuild_calls = 0, 0
+    local show_menu = function() menu_show_calls = menu_show_calls + 1 end
+    local cached_menu = {
+        onShowMenu = show_menu,
+        setUpdateItemTable = function(self)
+            rebuild_calls = rebuild_calls + 1
+            self.tab_item_table = menu_tabs
+        end,
+        tab_item_table = menu_tabs,
+    }
+    check("显示菜单前安装提升钩子", InkBridge._install_menu_promoter(cached_menu))
+    cached_menu:onShowMenu()
+    check("显示缓存菜单时执行钩子", menu_show_calls == 1 and rebuild_calls == 0)
+    cached_menu.tab_item_table = nil
+    cached_menu:onShowMenu()
+    check("菜单首次构建后也执行提升", menu_show_calls == 2 and rebuild_calls == 1)
+    check("菜单提升钩子只安装一次", not InkBridge._install_menu_promoter(cached_menu))
+    local menu_class = { onShowMenu = show_menu }
+    check("提升钩子可安装到KOReader菜单类", InkBridge._install_menu_promoter(menu_class))
+    local new_menu_instance = setmetatable({ tab_item_table = menu_tabs }, { __index = menu_class })
+    new_menu_instance:onShowMenu()
+    check("后续创建的菜单实例继承提升钩子", menu_show_calls == 3)
+    local icon_plugin = new_plugin{ path = PLUGIN_DIR }
+    icon_plugin:_install_menu_icon()
+    local icon_path = require("datastorage").getDataDir()
+        .. (is_windows and "\\icons\\inkbridge-bridge.png" or "/icons/inkbridge-bridge.png")
+    local icon_file = io.open(icon_path, "rb")
+    local installed_icon = icon_file and icon_file:read("*a")
+    if icon_file then icon_file:close() end
+    check("首次启动安装桥字PNG菜单图标", installed_icon and installed_icon:sub(1, 8) == "\137PNG\r\n\26\n")
+    icon_plugin:_install_menu_icon()
+    local icon_check = io.open(icon_path, "rb")
+    local icon_after_repeat = icon_check and icon_check:read("*a")
+    if icon_check then icon_check:close() end
+    eq("重复安装不覆盖已有图标", icon_after_repeat, installed_icon)
+    os.remove(icon_path)
 end
 
 -- ============================================================================
@@ -402,7 +464,7 @@ do
     WebDAV.list_history, WebDAV.download, MS.peek_po, MS.import_from_moon, WebDAV.confirm_jump = list, download, peek, import, confirm
 end
 
-print("== 7. 云端历史记录的保留策略（每台设备每本书留 10 条）==")
+print("== 7. 云端历史记录的保留策略（每台设备每本书留 3 条）==")
 -- ============================================================================
 -- 这是本项目里**唯一会删用户云端数据**的代码,每一条安全线都要有测试。
 -- 删除不可逆 —— 出错的代价不是"多一个文件",而是"另一台设备的记录没了"。
@@ -440,21 +502,21 @@ do
 
     -- ① 到上限为止:一条都不删
     local items = {}
-    for i = 1, 10 do items[i] = record("汉王C7T", 1000 + i, i) end
+    for i = 1, 3 do items[i] = record("汉王C7T", 1000 + i, i) end
     local p, del = prune_plugin(items)
-    eq("恰好 10 条:不删", run_prune(p, "没有这条"), 0)
+    eq("恰好 3 条:不删", run_prune(p, "没有这条"), 0)
     eq("  也没发出删除请求", #del, 0)
 
     -- ② 超一条:删最旧的那一条
     items = {}
-    for i = 1, 11 do items[i] = record("汉王C7T", 1000 + i, i) end
+    for i = 1, 4 do items[i] = record("汉王C7T", 1000 + i, i) end
     p, del = prune_plugin(items)
-    eq("11 条:删 1 条", run_prune(p, "没有这条"), 1)
+    eq("4 条:删 1 条", run_prune(p, "没有这条"), 1)
     eq("  最旧的那条被删", del[1], record("汉王C7T", 1001, 1).url)
 
-    -- ③ 每台设备**各算各的** —— 这是"每设备 10 条"的关键
+    -- ③ 每台设备**各算各的** —— 这是"每设备 3 条"的关键
     items = {}
-    for i = 1, 11 do items[i] = record("汉王C7T", 2000 + i, i) end          -- 11 条
+    for i = 1, 4 do items[i] = record("汉王C7T", 2000 + i, i) end          -- 4 条
     for i = 1, 3  do items[#items + 1] = record("Kindle", 3000 + i, 100 + i) end  -- 3 条
     p, del = prune_plugin(items)
     eq("两台设备:只删超限的那台", run_prune(p, "没有这条"), 1)
@@ -465,16 +527,17 @@ do
 
     -- ④ ★ 刚上传的那一条**永不删**,哪怕服务器把它的时间戳给成 0(排到最后)
     items = {}
-    for i = 1, 12 do items[i] = record("汉王C7T", 1000 + i, i) end
+    for i = 1, 5 do items[i] = record("汉王C7T", 1000 + i, i) end
     local keep_name = record("汉王C7T", 1001, 1).text      -- 最旧的那条,就是"刚传的"
     p, del = prune_plugin(items)
-    eq("刚上传的那条占一个名额", run_prune(p, keep_name), 1)
+    eq("刚上传的那条占一个名额", run_prune(p, keep_name), 2)
     check("  被删的不是它", del[1] ~= record("汉王C7T", 1001, 1).url, del[1])
-    eq("  删的是第二旧的", del[1], record("汉王C7T", 1002, 2).url)
+    check("  第二旧的被删", del[1] == record("汉王C7T", 1002, 2).url
+        or del[2] == record("汉王C7T", 1002, 2).url)
 
     -- ⑤ 认不出设备名的记录(旧格式)一律不碰
     items = {}
-    for i = 1, 11 do items[i] = record("汉王C7T", 1000 + i, i) end
+    for i = 1, 4 do items[i] = record("汉王C7T", 1000 + i, i) end
     items[#items + 1] = { is_file = true, text = "InkBridge-deadbeef-1700000000.json",
                           url = "/books/InkBridge-deadbeef-1700000000.json",
                           modification = 1 }
@@ -496,14 +559,14 @@ do
 
     -- ⑧ 删除抛异常:吃掉,继续删剩下的(不能让第 1 条失败挡住第 2 条)
     items = {}
-    for i = 1, 12 do items[i] = record("汉王C7T", 1000 + i, i) end
+    for i = 1, 5 do items[i] = record("汉王C7T", 1000 + i, i) end
     p, del = prune_plugin(items, "throw")
     eq("抛异常不传播,计数为 0", run_prune(p, "没有这条"), 0)
     eq("  并且把该试的两条都试了", #del, 2)
 
     -- ⑨ provider 不支持删除(老版本):放弃,不误报
     items = {}
-    for i = 1, 12 do items[i] = record("汉王C7T", 1000 + i, i) end
+    for i = 1, 5 do items[i] = record("汉王C7T", 1000 + i, i) end
     local p9 = new_plugin{ ui = { cloudstorage = { providers = { webdav = {
         run = function(cb) cb() end,
         listFolder = function() return items end,
@@ -512,9 +575,9 @@ do
 
     -- ⑩ 三台设备各超限:条数相加
     items = {}
-    for i = 1, 13 do items[i] = record("A", 1000 + i, i) end
-    for i = 1, 12 do items[#items + 1] = record("B", 2000 + i, 100 + i) end
-    for i = 1, 10 do items[#items + 1] = record("C", 3000 + i, 200 + i) end
+    for i = 1, 6 do items[i] = record("A", 1000 + i, i) end
+    for i = 1, 5 do items[#items + 1] = record("B", 2000 + i, 100 + i) end
+    for i = 1, 3 do items[#items + 1] = record("C", 3000 + i, 200 + i) end
     p, del = prune_plugin(items)
     eq("A 超 3、B 超 2、C 不超 → 删 5", run_prune(p, "没有这条"), 5)
     eq("  确实发了 5 个删除请求", #del, 5)
@@ -614,15 +677,19 @@ do
     local old_observe, old_write, old_upload = History.observe, State.write_file, WebDAV.upload
     local Moonsync = require("inkbridge_moonsync")
     local old_auto = Moonsync.auto_push
-    local cached, source = 0
-    History.observe = function(_, entry, from) cached = cached + 1; source = from end
+    local cached, source, cached_file, cached_id, moon_pushes = 0, nil, nil, nil, 0
+    History.observe = function(_, entry, from, file, book_id)
+        cached = cached + 1
+        source, cached_file, cached_id = from, file, book_id
+    end
     State.write_file = function() return true end
-    Moonsync.auto_push = function() return nil end
+    Moonsync.auto_push = function() moon_pushes = moon_pushes + 1; return nil end
     local plugin = new_plugin{
         _staging_dir = function() return SETTINGS_DIR end,
         _prune_history = function(_, _, _, cb) if cb then cb(0) end end,
     }
-    local entry = { book_id = "deadbeef", book_name = "书", text_anchor = "真实同步正文" }
+    local entry = { book_id = "deadbeef", book_name = "书", book_file = "book.epub",
+        text_anchor = "真实同步正文" }
     WebDAV.upload = function(_, _, cb) cb(false, "upload failed") end
     plugin:_sync(entry, "upload")
     eq("上传失败不产生首页记录", cached, 0)
@@ -630,7 +697,39 @@ do
     plugin:_sync(entry, "upload")
     eq("成功上传才采集首页正文", cached, 1)
     eq("上传来源不冒充静读天下", source, "墨桥 · 本机上传")
+    eq("上传回调传递原书文件快照", cached_file, "book.epub")
+    eq("上传回调传递原书身份快照", cached_id, "deadbeef")
+    eq("手动上传仍写回 Moon+", moon_pushes, 1)
+    cached = 0
+    plugin:_sync(entry, "upload", { close_document = true })
+    eq("关书自动上传不触发 Moon+ 写回", cached, 1)
+    eq("关书自动上传不触发 Moon+ 写回", moon_pushes, 1)
     History.observe, State.write_file, WebDAV.upload, Moonsync.auto_push = old_observe, old_write, old_upload, old_auto
+end
+
+do
+    local uploads, options = 0
+    connected = true
+    local plugin = new_plugin{
+        _book_context = function() return { book_id = "deadbeef", percent = 0.5 } end,
+        _sync = function(_, _, mode, opts)
+            if mode == "upload" then uploads = uploads + 1; options = opts end
+        end,
+    }
+    plugin:onCloseDocument()
+    plugin:onCloseDocument()
+    eq("关书事件每份文档只触发一次上传", uploads, 1)
+    check("关书上传标记模式且不调用Moon+", options and options.close_document == true)
+
+    connected = false
+    local offline = new_plugin{
+        _book_context = function() return { book_id = "deadbeef" } end,
+        _sync = function() uploads = uploads + 1 end,
+    }
+    offline:onCloseDocument()
+    eq("离线关书不派发上传", uploads, 1, shown[#shown].text)
+    contains("离线关书明确提示未上传", shown[#shown].text, "未上传云端")
+    connected = true
 end
 
 -- 收尾：清掉测试用的设置目录

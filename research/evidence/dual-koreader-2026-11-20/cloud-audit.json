@@ -1,0 +1,16 @@
+{
+  "before_count": 15,
+  "current_count": 17,
+  "changed": {},
+  "added": {
+    "inkbridgeplus/绍宋 (精修版) (榴弹怕水) (z-library.sk, 1lib.sk, -1120-111229-Test-A-454x721.449824d0.InkBridge.txt": {
+      "sha256": "08554586a4ccec5a99f96d5def229421dd66a802cbd2678373784547af4aadd0",
+      "size": 273
+    },
+    "inkbridgeplus/绍宋 (精修版) (榴弹怕水) (z-library.sk, 1lib.sk, -1120-112809-Test-B-800x1024.449824d0.InkBridge.txt": {
+      "sha256": "60b09686159f9e93e273b6e6b8b8b0c036f956b8fedcc79d796f0340b9bc7bbf",
+      "size": 271
+    }
+  },
+  "deleted": []
+}

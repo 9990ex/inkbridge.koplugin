@@ -624,6 +624,71 @@ do
 end
 
 do
+    -- 新版行框 API 按实际绘制行计数，不能把段落间距算成正文行。
+    -- 目标页临时切换后必须恢复文档原页。
+    local current_page, visited = 9, {}
+    local doc = plan_doc({
+        xpointer_ok = true,
+        text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 },
+        page_top = { [3] = "page-top-boxes" },
+        positions = { [XP_OK] = 90022, ["page-top-boxes"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 },
+    })
+    doc.getCurrentPage = function() return current_page end
+    doc.gotoPage = function(_, page)
+        current_page = page
+        visited[#visited + 1] = page
+    end
+    doc.getScreenPositionFromXPointer = function(_, xp)
+        return xp == "page-top-boxes" and 0 or 30, xp == "page-top-boxes" and 0 or 5
+    end
+    doc.getTextFromPositions = function(_, pos0, pos1, no_selection)
+        check("行框查询发生在目标页", current_page == 3, tostring(current_page))
+        check("按屏幕位置查询文本范围", pos0.y == 0 and pos1.y == 30 and no_selection)
+        return { sboxes = { { y = 0 }, { y = 10 }, { y = 10 }, { y = 20 }, { y = 30 } } }
+    end
+    local plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("行框计数忽略同一行的多个文字片段", plan and plan.line_number, 4)
+    eq("行框计数恢复原页面", current_page, 9)
+    eq("按需切到目标页再切回", table.concat(visited, ","), "3,9")
+
+    current_page, visited = 3, {}
+    plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("已在目标页仍能核算实际行号", plan and plan.line_number, 4)
+    eq("已在目标页不做多余跳页", #visited, 0)
+
+    doc.getTextFromPositions = function()
+        return { sboxes = {
+            { y = 0, h = 10 }, { y = 2, h = 10 },
+            { y = 14, h = 10 }, { y = 15, h = 10 },
+        } }
+    end
+    plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("同一视觉行的文字片段 y 不同仍合并", plan and plan.line_number, 2)
+
+    current_page, visited = 9, {}
+    doc.getTextFromPositions = function() error("render failed") end
+    plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("行框接口异常不影响正文定位方案", plan and plan.method, "xpointer")
+    eq("行框接口异常也恢复原页", current_page, 9)
+    eq("行框接口异常不退回公式猜行号", plan and plan.line_number, nil)
+
+    doc.getTextFromPositions = function() return { sboxes = {} } end
+    plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("行框为空不编行号", plan and plan.line_number, nil)
+    eq("行框为空仍恢复原页", current_page, 9)
+
+    doc.gotoPage = function(_, page)
+        current_page = page
+        if page == 3 then error("target page failed after moving") end
+    end
+    plan = WebDAV._plan_jump({ ui = plan_ui(doc) }, { xpointer = XP_OK, text_anchor = ANCHOR })
+    eq("切目标页抛错也恢复原页", current_page, 9)
+    eq("切页异常不编行号", plan and plan.line_number, nil)
+end
+
+do
     -- 页首就是远端那一行 -> 首行完全对齐
     local doc = plan_doc({
         xpointer_ok = true,

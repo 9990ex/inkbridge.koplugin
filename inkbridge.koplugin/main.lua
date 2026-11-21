@@ -102,6 +102,55 @@ local function detect_device_model()
     return nil
 end
 
+function InkBridge._promote_menu_tab(menu)
+    local tabs = menu and menu.tab_item_table
+    if type(tabs) ~= "table" then return false end
+    for _, tab in ipairs(tabs) do
+        if type(tab) == "table" and tab._inkbridge_tab then return false end
+    end
+
+    local function take_item(items)
+        for i, item in ipairs(items or {}) do
+            if type(item) == "table" then
+                if item.id == "inkbridge" then return table.remove(items, i) end
+                local found = take_item(item.sub_item_table)
+                if found then return found end
+            end
+        end
+    end
+
+    local item
+    for _, tab in ipairs(tabs) do
+        item = take_item(tab)
+        if item then break end
+    end
+    if not item then return false end
+
+    -- KOReader 的 tab 是带 icon 的菜单数组；孤儿项会被移进现有 tab。
+    local contents = item.sub_item_table_func and item.sub_item_table_func() or item.sub_item_table or {}
+    local bridge_tab = { icon = item.icon, remember = item.remember, _inkbridge_tab = true }
+    for _, child in ipairs(contents) do bridge_tab[#bridge_tab + 1] = child end
+    tabs[#tabs + 1] = bridge_tab
+    return true
+end
+
+function InkBridge._install_menu_promoter(menu)
+    if not menu or menu._inkbridge_tab_promoter or type(menu.onShowMenu) ~= "function" then
+        return false
+    end
+    local show_menu = menu.onShowMenu
+    menu.onShowMenu = function(menu_instance, ...)
+        if menu_instance.tab_item_table == nil
+                and type(menu_instance.setUpdateItemTable) == "function" then
+            menu_instance:setUpdateItemTable()
+        end
+        InkBridge._promote_menu_tab(menu_instance)
+        return show_menu(menu_instance, ...)
+    end
+    menu._inkbridge_tab_promoter = true
+    return true
+end
+
 -- 暴露出来只为**可测试**:型号探测有一堆分支(安卓 / 通用 / info() / 都没有),
 -- 而这些分支在真机上只能碰运气遇到。前面加下划线表示"不是给别的模块用的"。
 InkBridge._detect_device_model = detect_device_model
@@ -124,14 +173,41 @@ function InkBridge:init()
 
     self.server = G_reader_settings:readSetting("inkbridge_webdav_server")
 
+    self:_install_menu_icon()
+
     -- 仅仅被 PluginLoader 识别，还不会自动出现在阅读菜单里。
     -- ReaderMenu 只会调用已经注册到 registered_widgets 的插件的
     -- addToMainMenu 方法，所以这里必须显式注册自己。
     if self.ui and self.ui.menu then
-        self.ui.menu:registerToMainMenu(self)
+        local menu = self.ui.menu
+        menu:registerToMainMenu(self)
+        local ReaderMenu = require("apps/reader/modules/readermenu")
+        local FileManagerMenu = require("apps/filemanager/filemanagermenu")
+        InkBridge._install_menu_promoter(ReaderMenu)
+        InkBridge._install_menu_promoter(FileManagerMenu)
     end
     -- 首页独立、按需加载；默认不改变原有启动选择。
     if self.ui and not self.ui.document then require("inkbridge_home").attach(self) end
+end
+
+function InkBridge:_install_menu_icon()
+    local ok, err = pcall(function()
+        local util = require("util")
+        local icons = DataStorage:getDataDir() .. "/icons"
+        util.makePath(icons)
+        local target = icons .. "/inkbridge-bridge.png"
+        if require("libs/libkoreader-lfs").attributes(target, "mode") == "file" then return end
+        local source = assert(io.open(self.path .. "/inkbridge-bridge.png", "rb"))
+        local data = source:read("*a")
+        source:close()
+        local output = assert(io.open(target, "wb"))
+        output:write(data)
+        output:close()
+    end)
+    if not ok then
+        local logger_ok, logger = pcall(require, "logger")
+        if logger_ok then logger.warn("InkBridge: cannot install menu icon", err) end
+    end
 end
 
 -- WebDAV 同步服务要求我们先提供一个本地文件。
@@ -258,7 +334,7 @@ function InkBridge:_download_staging_path()
 end
 
 -- 发起一次手动上传或只读下载。
-function InkBridge:_sync(entry, mode)
+function InkBridge:_sync(entry, mode, options)
     if mode == "download" then
         local prefix = self:_history_prefix(entry)
         WebDAV.list_history(self, prefix, function(ok, entries, list_err)
@@ -349,12 +425,16 @@ function InkBridge:_sync(entry, mode)
         -- 才真正读完该文件；且回调只会触发一次（WebDAV.upload 内部有去重）。
         os.remove(history_path)
         if upload_ok then
-            require("inkbridge_home_history").observe(self, entry, "墨桥 · 本机上传")
+            require("inkbridge_home_history").observe(self, entry, "墨桥 · 本机上传",
+                entry.book_file, entry.book_id)
             -- 顺手把进度写进静读天下的 .po:上传本身就是在声明"我这边是最新的",
             -- 静读天下因此能无感跟随,不必再多点一次按键。
             -- 整段用 pcall 包住:写回失败绝不能影响"上传成功"这个结论。
             local moon_note
-            local ok_auto, note = pcall(Moonsync.auto_push, self)
+            local ok_auto, note = true, nil
+            if not (options and options.close_document) then
+                ok_auto, note = pcall(Moonsync.auto_push, self)
+            end
             if ok_auto then
                 moon_note = note
             else
@@ -387,7 +467,7 @@ end
 --
 -- 为什么按**服务器时间**排序:记录名里的时间戳是设备本地时钟,两台机器差几分钟
 -- 很正常;列表项的 modification 来自同一台服务器,才是可比的(和"选更新"同一套理由)。
-InkBridge.HISTORY_KEEP = 10
+InkBridge.HISTORY_KEEP = 3
 
 -- 删掉超出上限的旧记录;完成(或放弃)时回调删掉的条数。
 --
@@ -423,6 +503,9 @@ function InkBridge:_prune_history(prefix, keep_name, on_done)
                 -- list_history 已经按服务器时间从新到旧排过,这里再排一次:
                 -- 删除不可逆,不该依赖"别人保证的顺序"。
                 table.sort(list, function(a, b)
+                    -- 新上传项必须占用一个名额，即使服务器给它的时间最旧。
+                    if a.text == keep_name then return b.text ~= keep_name end
+                    if b.text == keep_name then return false end
                     return (tonumber(a.modification) or 0) > (tonumber(b.modification) or 0)
                 end)
                 for i = InkBridge.HISTORY_KEEP + 1, #list do
@@ -495,6 +578,25 @@ function InkBridge:upload_current()
     self:_with_network(function() self:_sync(entry, "upload") end)
 end
 
+-- CloseDocument 在文档释放前派发；必须同步采集，不能 nextTick 后访问已关闭文档。
+-- 自动关书只追加墨桥记录，不顺带写 Moon+，也不注册联网后的延迟重跑。
+function InkBridge:onCloseDocument()
+    if self._close_upload_started then return end
+    self._close_upload_started = true
+    if type(self.server) ~= "table" or self.server.type ~= "webdav" then return end
+    if not NetworkMgr:isConnected() then
+        show("墨桥：当前离线，本次关书进度未上传云端。")
+        return
+    end
+    local ok, err = pcall(function()
+        local entry, context_err = self:_book_context()
+        if not entry then error(context_err or "无法读取关书位置") end
+        self:_sync(entry, "upload", { close_document = true })
+    end)
+    if not ok then show("墨桥：关书进度未上传 —— " .. tostring(err)) end
+    -- 不返回 true，避免消费事件后阻止其他模块保存、关闭文档。
+end
+
 -- 菜单动作：读取当前页并发起同步。
 -- 如果远端记录更新，会在同步回调后显示跳转确认框。
 function InkBridge:download_current()
@@ -563,20 +665,6 @@ function InkBridge:show_sync_status()
         lines[#lines + 1] = tostring(row[1]) .. "：" .. tostring(row[2])
     end
     show(table.concat(lines, "\n"))
-end
-
--- 存储选项(A 方案):**只有一个后端时不制造"假选择"**,直接把它的子项摊开。
--- 以后真加了第二个后端(比如 Syncthing),这里自然长成
---   存储选项 → WebDAV / Syncthing → 各自的目录
--- 而不会在只有一个后端时留下一个"点进去只有一个选项"的空转层。
-function InkBridge:_storage_menu()
-    local backends = {
-        { text = "WebDAV", sub_item_table_func = function() return self:_webdav_menu() end },
-    }
-    if #backends == 1 then
-        return backends[1].sub_item_table_func()
-    end
-    return backends
 end
 
 -- 一个云同步后端内部:它自己的连接设置 + 借它同步的各个阅读器目录。
@@ -686,7 +774,7 @@ function InkBridge:_advanced_menu()
               show("墨桥：上传时自动写入静读天下已"
                   .. (Moonsync.auto_enabled() and "开启。" or "关闭。"))
           end },
-        { text = "存储选项", sub_item_table_func = function() return self:_storage_menu() end },
+        { text = "存储选项", sub_item_table_func = function() return self:_webdav_menu() end },
         -- 检查更新**不单独占一项** —— 它和"看版本号"是同一件事,
         -- 摆两处等于让用户猜哪个才是真的。点「关于插件」里的版本号即可。
         { text = "关于插件",
@@ -812,6 +900,7 @@ end
 
 -- KOReader 在书准备好之后会调用插件的这个方法(官方 kosync 插件同款)。
 function InkBridge:onReaderReady()
+    self._close_upload_started = nil
     if not self:auto_check_enabled() then return end
     UIManager:nextTick(function() self:_auto_check_remote() end)
 end
@@ -932,11 +1021,11 @@ function InkBridge:_ask_remote_update(entry, updates)
     })
 end
 
--- KOReader 调用这个方法，把插件菜单加入工具菜单。
+-- KOReader 调用这个方法，把插件菜单加入主菜单；显示前再提升为独立页签。
 function InkBridge:addToMainMenu(menu_items)
     menu_items.inkbridge = {
+        icon = "inkbridge-bridge",
         text = "InkBridge+ v" .. tostring(Meta.version or "unknown"),
-        sorting_hint = "tools",
         -- KOReader 的主菜单使用 sub_item_table_func 动态生成子菜单。
         -- 动态函数比直接写 sub_item_table 更兼容不同 KOReader 版本，
         -- 也能保证每次打开菜单时都拿到当前插件实例。

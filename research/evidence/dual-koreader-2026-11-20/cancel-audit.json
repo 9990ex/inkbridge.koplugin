@@ -1,0 +1,60 @@
+{
+  "A": {
+    "confirmation": {
+      "profile": "A",
+      "text": "远端阅读位置：68.00%\n远端设备：第 11426 / 16803 页\n首行对不齐：远端那一行在本页第 15 行（本机排版与远端不同）\n跳转过去吗？",
+      "after_plan": {
+        "page": 2095,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "pos": 1339038
+      },
+      "before": {
+        "page": 2095,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "pos": 1339038
+      }
+    },
+    "cancel": {
+      "after": {
+        "page": 2095,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "pos": 1339038
+      },
+      "closed": true,
+      "before": {
+        "page": 2095,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "pos": 1339038
+      }
+    }
+  },
+  "B": {
+    "confirmation": {
+      "profile": "B",
+      "text": "远端阅读位置：36.99%\n远端设备：第 2095 / 5663 页\n首行对不齐：远端那一行在本页第 8 行（本机排版与远端不同）\n跳转过去吗？",
+      "before": {
+        "pos": 9771292,
+        "page": 11426,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      },
+      "after_plan": {
+        "pos": 9771292,
+        "page": 11426,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      }
+    },
+    "cancel": {
+      "after": {
+        "pos": 9771292,
+        "page": 11426,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      },
+      "before": {
+        "pos": 9771292,
+        "page": 11426,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      },
+      "closed": true
+    }
+  }
+}

@@ -1,0 +1,77 @@
+{
+  "A": {
+    "reload": {
+      "xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+      "loaded": "/mnt/c/Users/burn/AppData/Local/Temp/opencode/dual-koreader-20261120/A/plugins/inkbridge.koplugin/inkbridge_webdav.lua",
+      "current_page": 2095
+    },
+    "plans": {
+      "remote_a": {
+        "page": 2095,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "method": "xpointer",
+        "first_line_same": true,
+        "line_number": 1,
+        "page_top": "/body/DocFragment[243]/body/p[105]/text().24"
+      },
+      "after": {
+        "page": 2095,
+        "rolling_xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "pos": 1339038,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24"
+      },
+      "remote_b": {
+        "page": 3862,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89",
+        "method": "xpointer",
+        "first_line_same": false,
+        "line_number": 15,
+        "page_top": "/body/DocFragment[377]/body/p[29]/text().46"
+      },
+      "before": {
+        "page": 2095,
+        "rolling_xpointer": "/body/DocFragment[243]/body/p[105]/text().24",
+        "pos": 1339038,
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24"
+      }
+    }
+  },
+  "B": {
+    "reload": {
+      "loaded": "/mnt/c/Users/burn/AppData/Local/Temp/opencode/dual-koreader-20261120/B/plugins/inkbridge.koplugin/inkbridge_webdav.lua",
+      "current_page": 11426,
+      "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+    },
+    "plans": {
+      "after": {
+        "rolling_xpointer": "/body/DocFragment[377]/body/p[32]/text().89",
+        "page": 11426,
+        "pos": 9771292,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      },
+      "remote_b": {
+        "line_number": 1,
+        "first_line_same": true,
+        "page_top": "/body/DocFragment[377]/body/p[32]/text().89",
+        "page": 11426,
+        "method": "xpointer",
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      },
+      "before": {
+        "rolling_xpointer": "/body/DocFragment[377]/body/p[32]/text().89",
+        "page": 11426,
+        "pos": 9771292,
+        "xpointer": "/body/DocFragment[377]/body/p[32]/text().89"
+      },
+      "remote_a": {
+        "line_number": 8,
+        "first_line_same": false,
+        "page_top": "/body/DocFragment[243]/body/p[103]/text().0",
+        "page": 6120,
+        "method": "xpointer",
+        "xpointer": "/body/DocFragment[243]/body/p[105]/text().24"
+      }
+    }
+  },
+  "webdav_sha256": "b2627b4c98b4e767ed4e478c9626ee157732f95d516c23c920fb1c1729dc5d9e"
+}

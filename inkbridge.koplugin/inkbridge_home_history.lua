@@ -15,6 +15,23 @@ local function short(text, count)
     return text
 end
 
+local function valid_time(value)
+    local timestamp = tonumber(value)
+    if not timestamp or timestamp ~= timestamp or timestamp == math.huge or timestamp == -math.huge then
+        return nil
+    end
+    local ok, formatted = pcall(os.date, "%m-%d %H:%M", timestamp)
+    return ok and formatted and timestamp or nil
+end
+
+-- 老缓存或云端载荷可能包含超出平台日期范围的数值；显示时安全退回读取时间。
+function History.format_time(record)
+    record = type(record) == "table" and record or {}
+    local original = valid_time(record.time)
+    local timestamp = original or valid_time(record.observed_at) or os.time()
+    return os.date("%m-%d %H:%M", timestamp), original ~= nil
+end
+
 function History.load()
     local settings = G_reader_settings
     local data = settings and settings:readSetting(History.KEY)
@@ -45,8 +62,8 @@ function History.add(file, entry, source, observed_at, book_id, note)
     end
     table.insert(records, 1, {
         text = text, source = source,
-        time = tonumber(entry.updated_at), -- 没有原时间时，不能冒充对端阅读时间。
-        observed_at = observed_at or os.time(),
+        time = valid_time(entry.updated_at), -- 无效/缺失时间不冒充对端阅读时间。
+        observed_at = valid_time(observed_at) or os.time(),
         percent = tonumber(entry.character_percent or entry.pos_percent or entry.percent),
         note = short(note, 120),
     })
@@ -65,12 +82,12 @@ function History.add(file, entry, source, observed_at, book_id, note)
 end
 
 -- 预览写盘失败不得影响已有同步流程。
-function History.observe(plugin, entry, source)
+function History.observe(plugin, entry, source, snapshot_file, snapshot_book_id)
     local ok, saved = pcall(function()
         local ui = plugin and plugin.ui
-        local file = ui and ui.document and ui.document.file
+        local file = snapshot_file or (ui and ui.document and ui.document.file)
         if not file then return false end
-        local id = require("inkbridge_state").book_id(file, ui)
+        local id = snapshot_book_id or require("inkbridge_state").book_id(file, ui)
         return History.add(file, entry, source, os.time(), id, entry.home_note)
     end)
     return ok and saved or false

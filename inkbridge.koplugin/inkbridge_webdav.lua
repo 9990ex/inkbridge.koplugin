@@ -713,6 +713,68 @@ function WebDAV._line_height(doc)
     return height
 end
 
+local function rendered_line_number(doc, page, page_top, xp)
+    if type(doc.getCurrentPage) ~= "function" or type(doc.gotoPage) ~= "function"
+            or type(doc.getScreenPositionFromXPointer) ~= "function"
+            or type(doc.getTextFromPositions) ~= "function" then
+        return nil
+    end
+
+    local ok_page, current_page = pcall(doc.getCurrentPage, doc)
+    current_page = ok_page and tonumber(current_page) or nil
+    if not current_page then return nil end
+
+    local moved = current_page ~= page
+    local ok_lines, line_number = pcall(function()
+        if moved then doc:gotoPage(page) end
+        local top_y, top_x = doc:getScreenPositionFromXPointer(page_top)
+        local here_y, here_x = doc:getScreenPositionFromXPointer(xp)
+        if not tonumber(top_y) or not tonumber(top_x)
+                or not tonumber(here_y) or not tonumber(here_x) then
+            return nil
+        end
+
+        local range = doc:getTextFromPositions(
+            { x = top_x, y = top_y }, { x = here_x, y = here_y }, true)
+        local boxes = range and range.sboxes
+        if type(boxes) ~= "table" or #boxes == 0 then return nil end
+
+        local tolerance = (WebDAV._line_height(doc) or 0) * 0.35
+        local line_count, line_center, line_samples, previous = 0, nil, 0, nil
+        for _, box in ipairs(boxes) do
+            local y = type(box) == "table" and tonumber(box.y) or nil
+            local height = type(box) == "table" and tonumber(box.h) or nil
+            if y then
+                local center = y + (height or 0) / 2
+                local same_line = line_center and math.abs(center - line_center) <= tolerance
+                if not same_line and previous and height and height > 0
+                        and previous.h and previous.h > 0 then
+                    local overlap = math.min(y + height, previous.y + previous.h)
+                        - math.max(y, previous.y)
+                    same_line = overlap >= math.min(height, previous.h) * 0.5
+                end
+                if not same_line then
+                    line_count = line_count + 1
+                    line_center, line_samples = center, 1
+                else
+                    line_samples = line_samples + 1
+                    line_center = line_center + (center - line_center) / line_samples
+                end
+                previous = { y = y, h = height }
+            end
+        end
+        return line_count > 0 and line_count or nil
+    end)
+
+    if moved then
+        local ok_restore = pcall(doc.gotoPage, doc, current_page)
+        if not ok_restore then return nil end
+        local ok_restored_page, restored_page = pcall(doc.getCurrentPage, doc)
+        if not ok_restored_page or tonumber(restored_page) ~= current_page then return nil end
+    end
+    return ok_lines and line_number or nil
+end
+
 -- 算出跳过去之后，远端那一行落在本机这一页的第几行（页首是第 1 行）。
 -- 返回 nil 表示算不出来（缺接口 / 缺字体设置），此时不编数字。
 --
@@ -738,9 +800,23 @@ function WebDAV._landing_info(doc, xp)
         end
     end
 
-    -- 先按「纵向偏移 ÷ 行高」算行号：这直接回答用户的问题（差几行），
-    -- 而且不会因为 xpointer 写法不同（元素 vs 文本节点）而误报不一致。
-    if info.page_top and type(doc.getPosFromXPointer) == "function" then
+    -- 优先读目标页实际排版的行框，避免字号公式与真实字体行高、段落间距不符。
+    -- 只临时切换文档页、不派发阅读位置事件；计算后恢复原页。
+    if info.page_top then
+        local line_number = rendered_line_number(doc, page, info.page_top, xp)
+        if line_number then
+            info.line_number = line_number
+            info.first_line_same = line_number == 1
+            return info
+        end
+    end
+
+    -- 较旧 KOReader 没有行框 API 时才用行高估算；有接口却取不到行框就不猜。
+    local has_line_boxes = type(doc.getCurrentPage) == "function"
+        and type(doc.gotoPage) == "function"
+        and type(doc.getScreenPositionFromXPointer) == "function"
+        and type(doc.getTextFromPositions) == "function"
+    if not has_line_boxes and info.page_top and type(doc.getPosFromXPointer) == "function" then
         local ok_here, here_y = pcall(doc.getPosFromXPointer, doc, xp)
         local ok_top, top_y = pcall(doc.getPosFromXPointer, doc, info.page_top)
         local line_height = WebDAV._line_height(doc)

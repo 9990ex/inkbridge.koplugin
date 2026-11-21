@@ -6,7 +6,7 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（1319 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（1397 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
@@ -14,10 +14,10 @@
    luajit tests/moontxt_spec.lua    # 149 条  TXT 编码、UTF-16 分块显示坐标、短段确认回退与反向核对
    luajit tests/moonsync_spec.lua   # 392 条  静读天下互通（读、写、上传设备来源、平台、目录换算、导航单元与字符坐标）
    luajit tests/update_spec.lua     #  48 条  版本比较与 release 解析
-   luajit tests/webdav_spec.lua     # 273 条  云存储层与首页远端正文采集、重放去重
-   luajit tests/main_spec.lua       # 100 条  主流程、保留策略、设备名探测、同步状态页、首次 Moon+ 下载、上传成功才采集
+   luajit tests/webdav_spec.lua     # 290 条  云存储层、实际排版行号与恢复原页、首页远端正文采集、重放去重
+   luajit tests/main_spec.lua       # 124 条  主流程、版本菜单、独立顶层图标页签与真实菜单结构提升、图标安装、关书自动上传、三条保留策略、设备名探测、同步状态页
    luajit tests/state_spec.lua      #  81 条  位置记录本身
-   luajit tests/home_spec.lua       #  70 条  三书九条正文、缓存、生命周期、安全重放、原生Home接入与手动只读补全入口
+   luajit tests/home_spec.lua       # 107 条  书刊式主次排版、三书九条缓存与详情、生命周期、安全重放、原生Home接入、菜单手势、只读补全与元数据兜底
    luajit tests/home_sync_spec.lua  #  43 条  首页只读补全、完整身份、限量、去重、离线、超时、部分失败与迟到回调
    ```
 

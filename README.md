@@ -33,12 +33,10 @@ InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界�
 
 ## 当前状态
 
-**当前开发版本为 0.3.8-alpha**。它以 InkBridge 0.3.7-alpha 为功能与安全基线，新增轻量同步状态页；安装包只在完整回归校验通过后由项目打包器生成。
+**当前开发版本为 0.3.19-alpha**。安装包只在完整回归校验通过后由项目打包器生成；此版本修复墨桥顶栏独立页签，并整理了首次使用说明。
 0.3.0 是正式版基线；之后的小改动继续走 **`0.3.x-alpha`**（0.3.1-alpha、0.3.2-alpha…），
 不跳大版本号。
-此前版本的上传、下载与跨设备跳转已在 Android 与 Kindle 设备上实测通过，
-静读天下（Moon+ Reader）的双向互通也已真机验证。0.3.7-alpha 更新了静读天下导入定位逻辑，
-本地回归通过；这一版的新定位路径仍需设备实测。
+上传、下载与跨设备跳转已在 Android 与 Kindle 设备上实测；具体覆盖范围和精度限制见插件说明。
 
 这是 0.x 版本：核心功能已真机验证，但仍在打磨，不代表稳定版本。使用前请先读插件自己的说明
 [`inkbridge.koplugin/README.md`](inkbridge.koplugin/README.md)。
@@ -51,9 +49,9 @@ InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界�
    - Kobo：`.adds/koreader/plugins/`
    - Kindle：`koreader/plugins/`
    - Android：`/sdcard/koreader/plugins/`
-4. 完整重启 KOReader，在工具菜单打开「InkBridge+ / 墨桥+」。
+4. 完整重启 KOReader，点击顶栏独立的 **桥** 页签进入墨桥。
 
-首次使用先配云同步：**高级选项 → 存储选项 → 墨桥同步目录**
+首次使用从 **桥 → 高级选项 → 存储选项 → 墨桥同步目录** 配置云同步
 （只配了一台服务器时会直接进目录浏览），并在里面**长按**「Long-press here to choose current folder」
 那一项来选定云端目录（KOReader 的标准交互）。
 
@@ -62,7 +60,7 @@ InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界�
 
 ### 参与开发
 
-见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（933 条断言，不需要设备）、
+见 [`DEVELOPMENT.md`](DEVELOPMENT.md)：如何跑回归测试（1397 条断言，不需要设备）、
 进度记录的定位原理，以及已知问题清单。
 
 ## 设计原则
