@@ -12,6 +12,7 @@
 -- 运行: luajit tests/moonsync_spec.lua   (在仓库根目录执行)
 -- ============================================================================
 
+dofile("tests/material_business_stub.lua")
 local script_path = arg and arg[0] or "tests/moonsync_spec.lua"
 local script_dir  = script_path:match("^(.*)[/\\][^/\\]*$") or "."
 local PLUGIN_DIR  = script_dir .. "/../inkbridge.koplugin"

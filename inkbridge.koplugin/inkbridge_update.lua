@@ -1,9 +1,8 @@
--- inkbridge_update.lua ——「检查更新」:只查、不装。
+-- inkbridge_update.lua ——「检查更新」及安装前校验。
 --
 -- 为什么先只做"查":自动安装要**替换正在运行的插件目录**。一旦解压到一半失败,
 -- 插件就废了 —— 而它恰恰是"修插件"的工具。所以这一步先把"有没有新版"说清楚,
--- 自动安装留到插件更稳的时候。完整设计(下载 → 解压到临时目录 → 校验 →
--- 原子改名替换 → 提示重启)已记录在 research/ 的笔记里。
+-- 自动安装由 inkbridge_update_install.lua 执行：下载到暂存目录，完整校验后再替换。
 --
 -- 本模块只做纯计算(版本比较、解析 GitHub 返回、拼展示内容),不碰网络与界面 ——
 -- 这样这一层能在 LuaJIT 里直接测。JSON 解码器由调用方**注入**:
@@ -56,7 +55,7 @@ function Update.parse_release(json_text, decode)
     end
 
     -- 资产里挑第一个 .zip(就是插件包);没有也照样能显示版本信息
-    local asset_name, asset_url, asset_size
+    local asset_name, asset_url, asset_size, asset_digest
     if type(data.assets) == "table" then
         for _, a in ipairs(data.assets) do
             if type(a) == "table" and type(a.name) == "string"
@@ -64,6 +63,7 @@ function Update.parse_release(json_text, decode)
                 asset_name = a.name
                 asset_url  = a.browser_download_url
                 asset_size = tonumber(a.size)
+                asset_digest = type(a.digest) == "string" and a.digest or nil
                 break
             end
         end
@@ -78,8 +78,41 @@ function Update.parse_release(json_text, decode)
         asset_name = asset_name,
         asset_url  = asset_url,
         asset_size = asset_size,
+        asset_digest = asset_digest,
         prerelease = data.prerelease and true or false,
     }
+end
+
+-- GitHub assets currently expose `sha256:<hex>`.  Keep this parser strict:
+-- an absent or differently formatted digest must not silently become trusted.
+function Update.sha256_digest(value)
+    if type(value) ~= "string" then return nil end
+    local hex = value:match("^sha256:([0-9a-fA-F]+)$")
+    if not hex or #hex ~= 64 then return nil end
+    return hex:lower()
+end
+
+function Update.digest_matches(actual, advertised)
+    local expected = Update.sha256_digest(advertised)
+    if not expected and type(advertised) == "string"
+            and #advertised == 64 and advertised:match("^[0-9a-fA-F]+$") then
+        expected = advertised
+    end
+    return type(actual) == "string" and type(expected) == "string"
+        and actual:lower() == expected:lower()
+end
+
+-- Archive entries must remain under the one plugin directory.  This is used
+-- before extraction because ffi/archiver deliberately accepts arbitrary paths.
+function Update.is_safe_archive_path(path)
+    if type(path) ~= "string" or path == "" or path:sub(1, 1) == "/"
+            or path:match("^[A-Za-z]:") then return false end
+    if path:find("\\", 1, true) then return false end
+    for part in path:gmatch("[^/]+") do
+        if part == ".." or part == "." then return false end
+    end
+    return path == "inkbridge.koplugin" or path:sub(1, #"inkbridge.koplugin/")
+        == "inkbridge.koplugin/"
 end
 
 -- 把"当前版本 vs 远端发布"拼成给 KeyValuePage 用的键值对(纯函数)。

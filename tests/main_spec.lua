@@ -5,6 +5,7 @@
 -- 运行： luajit tests/main_spec.lua   (在仓库根目录执行)
 -- ============================================================================
 
+dofile("tests/material_business_stub.lua")
 local script_path = arg and arg[0] or "tests/main_spec.lua"
 local script_dir  = script_path:match("^(.*)[/\\][^/\\]*$") or "."
 local PLUGIN_DIR  = script_dir .. "/../inkbridge.koplugin"
@@ -353,13 +354,39 @@ do
 
     local menu_items = {}
     plugin:addToMainMenu(menu_items)
-    local menu = menu_items.inkbridge.sub_item_table_func()
     eq("顶层页签显示 InkBridge+", menu_items.inkbridge.text, "InkBridge+ v" .. require("_meta").version)
     eq("墨桥页签使用汉字桥图标", menu_items.inkbridge.icon, "inkbridge-bridge")
     eq("菜单入口不再指定工具子菜单", menu_items.inkbridge.sorting_hint, nil)
-    local status_index = item_index(menu, "同步状态")
-    local upload_index = item_index(menu, "上传阅读进度")
-    check("同步状态排在上传前", status_index and upload_index and status_index < upload_index)
+    check("墨桥保留原位下拉菜单入口", menu_items.inkbridge.callback == nil
+        and type(menu_items.inkbridge.sub_item_table_func) == "function")
+    local menu = menu_items.inkbridge.sub_item_table_func()
+    for i, label in ipairs({ "上传", "下载", "同步", "高级" }) do
+        eq("下拉图标顺序" .. i, menu[i].text, label)
+        check("下拉动作带有图标" .. i, type(menu[i].icon) == "string")
+    end
+    check("高级选项继续使用原生动态子菜单", type(menu[4].sub_item_table_func) == "function")
+    local bookmenu = menu_items.inkbridge_book.sub_item_table_func()
+    check("墨页签使用独立汉字图标", menu_items.inkbridge_book.icon == "inkbridge-ink")
+    for i, label in ipairs({ "书籍重构", "章节跳转", "内容搜索", "快速跳转", "首页" }) do
+        eq("墨页签书籍操作顺序" .. i, bookmenu[i].text, label)
+    end
+    check("桥页签只保留跨设备同步功能及配置入口", #menu == 4 or #menu == 5 and menu[5]._inkbridge_setup)
+    check("没有打开书时禁用章节搜索和跳转", not bookmenu[2].enabled_func()
+        and not bookmenu[3].enabled_func() and not bookmenu[4].enabled_func())
+    local chapter_calls, search_calls, goto_calls = 0, 0, 0
+    plugin.ui = { document = {}, toc = { onShowToc = function() chapter_calls = chapter_calls + 1 end },
+        search = { onShowFulltextSearchInput = function() search_calls = search_calls + 1 end },
+        gotopage = { onShowGotoDialog = function() goto_calls = goto_calls + 1 end } }
+    check("打开书后动态启用三个书籍入口", bookmenu[2].enabled_func()
+        and bookmenu[3].enabled_func() and bookmenu[4].enabled_func())
+    bookmenu[2].callback(); bookmenu[3].callback(); bookmenu[4].callback()
+    check("书籍入口调用当前阅读器原生功能", chapter_calls == 1 and search_calls == 1 and goto_calls == 1)
+    plugin.ui = nil
+    local rebuild_plugin
+    package.loaded["inkbridge_rebuild_ui"] = { show = function(p) rebuild_plugin = p end }
+    bookmenu[1].callback()
+    check("书籍重构按需加载并接收当前插件", rebuild_plugin == plugin)
+    package.loaded["inkbridge_rebuild_ui"] = nil
     local menu_tabs = {
         { icon = "appbar.navigation" },
         { icon = "appbar.tools", menu_items.inkbridge },
@@ -367,11 +394,24 @@ do
     menu_items.inkbridge.id = "inkbridge"
     local mock_menu = { tab_item_table = menu_tabs }
     check("菜单排序后提升为独立顶层页签", InkBridge._promote_menu_tab(mock_menu)
-        and menu_tabs[#menu_tabs].icon == "inkbridge-bridge")
-    check("提升后从工具页签列表移除", #menu_tabs[2] == 0)
-    eq("提升保留桥字图标", menu_tabs[#menu_tabs].icon, "inkbridge-bridge")
-    eq("独立页签保留插件菜单首项", menu_tabs[#menu_tabs][1].text, menu[1].text)
+        and menu_tabs[1].icon == "inkbridge-bridge")
+    check("提升后从工具页签列表移除", #menu_tabs[3] == 0)
+    eq("提升保留桥字图标", menu_tabs[1].icon, "inkbridge-bridge")
+    check("独立页签标记原位网格且不弹窗", menu_tabs[1]._inkbridge_grid
+        and menu_tabs[1].callback == nil)
     check("重复刷新不会重复插入页签", not InkBridge._promote_menu_tab(mock_menu) and #menu_tabs == 3)
+    local bridge = table.remove(menu_tabs, 1)
+    table.insert(menu_tabs, bridge)
+    check("缓存中的桥页签也能移到第一位", InkBridge._promote_menu_tab(mock_menu)
+        and menu_tabs[1] == bridge and #menu_tabs == 3)
+    check("其他页签的相对顺序不变", menu_tabs[2].icon == "appbar.navigation"
+        and menu_tabs[3].icon == "appbar.tools")
+    menu_items.inkbridge_book.id = "inkbridge_book"
+    table.insert(menu_tabs[3], menu_items.inkbridge_book)
+    check("墨提升为与桥平级的第二个页签", InkBridge._promote_menu_tab(mock_menu)
+        and menu_tabs[1]._inkbridge_tab and menu_tabs[2]._inkbridge_book_tab
+        and menu_tabs[2]._inkbridge_grid and menu_tabs[2].icon == "inkbridge-ink")
+    check("两页签重复显示不重复创建", not InkBridge._promote_menu_tab(mock_menu) and #menu_tabs == 4)
     local menu_show_calls, rebuild_calls = 0, 0
     local show_menu = function() menu_show_calls = menu_show_calls + 1 end
     local cached_menu = {
@@ -739,7 +779,7 @@ do
     local module_names = { "socket.http", "socket", "ltn12", "rapidjson" }
     local saved = {}
     for _, name in ipairs(module_names) do saved[name] = package.loaded[name] end
-    local request, decoded, request_count, response_body = nil, nil, 0, '{"tag_name":"v0.3.21-alpha"}'
+    local request, decoded, request_count, response_body = nil, nil, 0, '{"tag_name":"v0.3.20-alpha"}'
     local mode = "success"
     package.loaded["socket"] = { skip = function(n, ...) return select(n + 1, ...) end }
     package.loaded["ltn12"] = { sink = { table = function(buffer)
@@ -766,8 +806,8 @@ do
     package.loaded["rapidjson"] = { decode = function(body)
         decoded = body
         if mode == "invalid_json" then error("bad json") end
-        return { tag_name = "v0.3.21-alpha", assets = {
-            { name = "inkbridge.moon.koplugin-v0.3.21-alpha.zip",
+        return { tag_name = "v0.3.20-alpha", assets = {
+            { name = "inkbridge.moon.koplugin-v0.3.20-alpha.zip",
               browser_download_url = "https://example.com/update.zip" },
         } }
     end }
@@ -786,8 +826,24 @@ do
     eq("更新请求带 GitHub JSON 类型", request and request.headers.Accept, "application/vnd.github+json")
     eq("HTTP 200 的多返回值不误报网络失败", last_keyvalue and last_keyvalue.title, "墨桥 · 检查更新")
     eq("多个数据块完整进入 JSON 解码器", decoded, response_body)
-    eq("更新页面显示返回版本", row_value(last_keyvalue and last_keyvalue.kv_pairs, "最新版本"), "v0.3.21-alpha")
-    eq("新版本页面显示安装包地址", row_value(last_keyvalue and last_keyvalue.kv_pairs, "下载地址"), "https://example.com/update.zip")
+    eq("更新页面显示返回版本", row_value(last_keyvalue and last_keyvalue.kv_pairs, "最新版本"), "v0.3.20-alpha")
+    eq("同版本不显示下载地址", row_value(last_keyvalue and last_keyvalue.kv_pairs, "下载地址"), nil)
+
+    local install_confirmation
+    local major, minor, patch = require("_meta").version:match("^(%d+)%.(%d+)%.(%d+)")
+    local newer_tag = string.format("v%d.%d.%d-alpha", tonumber(major), tonumber(minor), tonumber(patch) + 1)
+    local newer_plugin = new_plugin{ _confirm_install_update = function(_, rel) install_confirmation = rel end }
+    package.loaded["rapidjson"].decode = function(body)
+        decoded = body
+        if mode == "invalid_json" then error("bad json") end
+        return { tag_name = newer_tag, assets = {
+            { name = "inkbridge.moon.koplugin-" .. newer_tag .. ".zip",
+              browser_download_url = "https://example.com/update.zip", size = 10,
+              digest = "sha256:" .. string.rep("a", 64) },
+        } }
+    end
+    newer_plugin:_do_check_update()
+    eq("发现新版进入安装确认", install_confirmation and install_confirmation.tag, newer_tag)
 
     mode = "timeout"
     local text = run()

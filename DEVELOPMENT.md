@@ -30,10 +30,19 @@ KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自�
 | `tests/moonsync_spec.lua` | 静读天下互通：下载列表、写回四关口（换算/自检/备份/回读校验）、兼容平台状态与文案、手动选文件、**目录换算（云浏览器选中的那一层 → 设置值）与手动输入兜底**、`peek_po` |
 | `tests/webdav_spec.lua` | 云存储层：远端路径校验、只读下载（404、非法路径、临时文件清理）、历史记录筛选与排序、上传两条路径与 `provider.base` 副本/恢复、列目录与 `show_unsupported` 还原、**借 KOReader 云浏览器选目录（`pick_folder`）**、删除守卫、**跳转方式分级 `_plan_jump`**、**错误码→中文的 `describe_error`**、全文搜索期间的输入防护 |
 | `tests/main_spec.lua` | 云端文件名生成（格式、分段、UTF-8 截断、非法字符）、位置比较、上传后清理暂存文件、未联网时的提示流程、**下载临时路径为纯 ASCII**、**云端历史保留策略**、**设备名探测与截断** |
+| `tests/menu_spec.lua` | 墨桥页签原位下拉图标网格：原生页签与页脚、动作委托、动态配置、窄屏与 DPI、自高级子菜单返回 |
+| `tests/rebuild_spec.lua` | EPUB 正文提取、实体与路径校验、章名误判防护、卷层级、脚本内容、章号章名合并、spine 顺序、打包回读、重名保护、取消清理、打开新副本、阶段进度与每秒节流 |
 | `tests/state_spec.lua` | 文本锚点规范化（UTF-8 按字符计数、**xpointer 字符偏移**）、阅读位置采集、记录校验与向后兼容、紧凑载荷的结构与体积 |
 | `tests/update_spec.lua` | 版本号比较与 release 页面解析 |
-| `tests/home_spec.lua` | 首页正文缓存上限、去重、书籍版本、三书选择、启动设置恢复、时钟生命周期和唯一锚点重放 |
+| `tests/update_install_spec.lua` | 更新包摘要、ZIP 路径拒绝、插件替换及回滚 |
+| `tests/home_spec.lua` | 首页正文缓存上限、去重、书籍版本、正在阅读与独立历史分页、固定栏目与布局缓存、启动设置恢复、时钟生命周期和唯一锚点重放 |
 | `tests/home_sync_spec.lua` | 首页手动只读补全：三书限量、墨桥完整身份、Moon独立上下文、离线、超时、迟到回调和部分失败 |
+| `tests/library_spec.lua` | 本地目录递归扫描、目录优先级、取消和文件过滤、WebDAV 递归书目扫描、独立同步目录及下载接口继承、完整身份归组与单条云端删除守卫 |
+| `tests/calendar_spec.lua` | 离线公历转农历、实际日期对照、闰月与非法日期 |
+| `tests/home_preview_spec.lua` | 原书章节与正文选段、全书唯一锚点、标题取正文、跨文件续文、空章与重复拒绝、UTF8、分批处理、取消及身份变化 |
+| `tests/book_files_spec.lua` | 本地文件改名与两种删除、保留保护、历史与缓存迁移、名称与文件身份检查、同名拒绝、失败不更新数据 |
+| `tests/material_spec.lua` | 图标按钮原生按压契约、菜单分页引用、窄屏、动态选中与禁用状态、多级返回及说明 |
+| `tests/book_metadata_spec.lua` | 本机元数据身份守卫、字段校验、落盘回读、四字段合并保存、保留非表单字段、预填与取消 |
 
 > 断言**条数刻意不写在这里**：每加一条测试它就会变，这张表曾经因此烂掉过一版
 > （还留着早就不存在的文件与对不上的数字）。权威数字在 [`AGENTS.md`](AGENTS.md) 的
@@ -42,7 +51,7 @@ KOReader 插件 InkBridge+(墨桥+)的开发文档。功能:通过 KOReader 自�
 在仓库根目录执行(需要 LuaJIT —— 与 KOReader 运行时同款,LuaJIT 官网或包管理器都能装):
 
 ```bash
-sh tests/run_all.sh            # 一次跑完九份;任何一份崩掉都会被判为失败
+sh tests/run_all.sh            # 一次跑完全部测试；任何一份崩掉都会被判为失败
 # 或者单跑:
 luajit tests/moon_spec.lua
 luajit tests/moontxt_spec.lua
@@ -84,8 +93,71 @@ git diff v0.2.13-alpha -- inkbridge.koplugin   # 与迁移前的基线对比
 
 ## 安装到设备
 
+书库默认读取本地文件夹，顶部「本地 / WebDAV」切换来源。独立本地目录存于
+`inkbridge_library_local_folder`，未配置时依次采用有效的 KOReader 主目录、当前文件管理器目录、
+上次浏览目录；显式选择的目录失效时报告错误，不静默改扫其他目录。WebDAV 书目目录存于
+`inkbridge_library_webdav_server`，同步记录仍使用 `inkbridge_webdav_server`，互不覆盖。
+本地扫描每批最多处理 100 项，最多五层子目录和五万个条目，过滤隐藏项、同步记录与符号链接，
+离开页面即取消。普通本地浏览不联网，云端记录在书籍详情中手动读取；记录按完整书籍身份核对。
+切换服务器的临时客户端必须继承原插件接口，包括 `_download_staging_path` 和 `_staging_dir`。
+`inkbridge_library_view` 保存文件夹／全部书籍视图、列表行高与排序，默认按文件夹浏览。
+`.sdr` 是 KOReader 伴随目录，不显示在书库中。
+`inkbridge_book_files.lua` 管理详情页的本地文件改名和删除；确认前生成文件身份与属性快照，
+执行前重新检查，不处理符号链接和当前打开的文件。改名拒绝覆盖，保留扩展名，通过
+`DocSettings.updateLocation`、ReadHistory、ReadCollection 更新相关数据，并迁移墨桥缓存。
+`inkbridge_library_keep_files` 保存路径保留标记；标记保留时禁止删除。删除可保留伴随数据，
+或按用户确认一并清理。文件变动后的索引更新若部分失败，会明确报告失败的项目。
+原生文件管理器入口位于首页设置中。
+
+### Material Ink 视觉层（0.3.28-alpha）
+
+`inkbridge_material.lua` 提供插件专属的圆角卡片、组合图标按钮、图标菜单和原生输入/确认包装。
+不修改全局控件原型。菜单使用 FocusManager 与 Button 绘制图标网格，窄屏两列，常规三列；
+超过容量显式分页，保留同一弹窗对象，避免原回调关闭过期引用。菜单必须实现 onShow 重绘和返回事件。
+窗口尺寸变化时关闭旧菜单，让底层页面按新尺寸重建，重新打开时绑定新的页面回调。
+按钮的 `label_widget` 必须保持带 fgcolor 的文本叶节点，不能替换为 group，否则原生按压反馈会崩溃。
+业务回归通过 `tests/material_business_stub.lua` 保留原有业务桩；视觉模块本身由 material_spec 和真实界面检查覆盖。
+书籍行右侧的三点按钮独占 48 像素触控区，其余书籍行直接打开书籍；文件夹用图标及整行进入。
+同步子菜单按动态表构建，保留 checked_func、enabled_func 和帮助文本，返回上一级图标菜单。
+
+首页四个区域显示时钟日期农历、当前书与最近一次记录、两次较早记录、导航。当前 EPUB/TXT
+的三个同步锚点若尚无选段缓存，`inkbridge_home_preview.lua` 分批只读扫描原书，验证书籍 ID、
+读取前后文件指纹和全书唯一命中，再补入真实标题及最多 220 字正文。标题锚点取本章紧随的正文，
+不跨入下一章。缓存保存 `preview_version/stamp/status`，不修改原 `text` 锚点，不上传章节或选段。
+取消、解析失败、身份变化和迟到回调不得复活已删除记录。农历数据来自 solarlunar（ISC 声明随模块保留），
+2026 年日期按香港天文台对照表核对。
+
 把 `inkbridge.koplugin/` 整个目录放进 KOReader 的 `plugins/` 下,重启 KOReader,
 在顶栏独立的「桥」页签里使用墨桥功能。
+
+### 阅读记录与元信息入口（0.3.30-alpha）
+
+顶栏自有PNG换为统一线宽的双向箭头和调节滑杆，保留原图标ID及安装时逐字节更新机制。
+生成源位于本地墨桥-samples/build_menu_icons.py，不依赖字体或外部图像库。
+书库详情移除独立的阅读历史、管理同步记录入口，统一为阅读记录。Material.recordList采用模态分页卡片，
+直接显示时间、来源、章节和两行摘录；原生textviewer详情也通过Material包装保持模态。
+先关闭书籍菜单再打开列表，先关闭列表再打开详情；关闭详情返回列表，列表返回书籍菜单。
+本机/云端删除仍分别委托原来的逐条守卫，成功后仅移除原条目并刷新列表，拒绝或取消均保留条目。
+最近阅读时间来自原生readhistory；章节/摘要仅来自原记录，缺失不猜测。
+文件名编辑移入EPUB元信息表单的次级按钮，继续委托Files.rename，随后按新路径重建会话，保留四项草稿。
+文件名操作立即生效；元信息仍需保存。非EPUB的改名入口保留，元信息仍只写本机伴随数据。
+
+### 桥与墨、元信息表单（0.3.29-alpha）
+
+`main.lua` 在阅读器和文件管理器中把「桥、墨」提升为前两个平级页签，保留其他页签相对顺序。
+桥只保留同步入口；墨提供重构、目录、搜索、快速跳转和首页，后三个阅读动作委托当前阅读器的 toc、search、gotopage 模块。
+菜单图标底色为48dp圆形，图形24dp，文字位于圆形下方并留8dp；Material菜单圆形为40dp。
+旧版Button不转发alpha参数，须释放首次图标缓存后在图标叶节点显式设置alpha，避免灰色圆形内出现白色方块。
+从模态图标菜单打开的输入、确认与通知也使用模态层级，避免被菜单覆盖。
+按钮实例通过quietButton关闭_doFeedbackHighlight/_undoFeedbackHighlight，不修改全局flash_ui设置或Button类。
+普通页面按钮48dp，底部按钮88dp、导航区域96dp；首页和书库共用同一基线，分页区位于导航上方。
+卡片内宽同时扣除padding和border；空记录文本不得使用页面全宽，以免白色背景盖住边框。
+
+`inkbridge_book_metadata.lua` 使用KOReader本机自定义元数据机制。编辑入口为MultiInputDialog四字段表单：
+书名(title)、作者(authors)、分类(keywords)、系列(series)，一次校验并合并写入原生custom_metadata.lua。
+写入前检查原书身份、大小及时间戳，不处理当前打开的书；保存后回读并广播原生元数据刷新事件。
+保留doc_props原始备份及其他custom_props字段，不重打包EPUB、不改文件名、不更换book_id。
+表单尺寸变化时关闭旧键盘与表单，在nextTick按新屏幕尺寸重建并保留未保存字段。
 
 首次使用先配云同步:**高级选项 → 存储选项 → 墨桥同步目录**
 (只配了一台服务器时会直接进目录浏览)——**必须长按**「Long-press here to choose current folder」

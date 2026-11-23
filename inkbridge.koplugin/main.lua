@@ -10,9 +10,10 @@
 
 local WidgetContainer = require("ui/widget/container/widgetcontainer")
 local UIManager = require("ui/uimanager")
-local InfoMessage = require("ui/widget/infomessage")
-local InputDialog = require("ui/widget/inputdialog")
-local ConfirmBox = require("ui/widget/confirmbox")
+local Material = require("inkbridge_material")
+local InfoMessage = Material.widget("infomessage")
+local InputDialog = Material.widget("inputdialog")
+local ConfirmBox = Material.widget("confirmbox")
 local DataStorage = require("datastorage")
 local NetworkMgr = require("ui/network/manager")
 
@@ -105,33 +106,47 @@ end
 function InkBridge._promote_menu_tab(menu)
     local tabs = menu and menu.tab_item_table
     if type(tabs) ~= "table" then return false end
-    for _, tab in ipairs(tabs) do
-        if type(tab) == "table" and tab._inkbridge_tab then return false end
-    end
-
-    local function take_item(items)
+    local function take_item(items, id)
         for i, item in ipairs(items or {}) do
             if type(item) == "table" then
-                if item.id == "inkbridge" then return table.remove(items, i) end
-                local found = take_item(item.sub_item_table)
+                if item.id == id then return table.remove(items, i) end
+                local found = take_item(item.sub_item_table, id)
                 if found then return found end
             end
         end
     end
-
-    local item
-    for _, tab in ipairs(tabs) do
-        item = take_item(tab)
-        if item then break end
+    local changed = false
+    for position, spec in ipairs({
+        { id = "inkbridge", marker = "_inkbridge_tab" },
+        { id = "inkbridge_book", marker = "_inkbridge_book_tab" },
+    }) do
+        local existing
+        for index, tab in ipairs(tabs) do
+            if tab[spec.marker] then existing = index; break end
+        end
+        if existing then
+            if existing ~= position then
+                local tab = table.remove(tabs, existing)
+                table.insert(tabs, math.min(position, #tabs + 1), tab)
+                changed = true
+            end
+        else
+            local item
+            for _, tab in ipairs(tabs) do
+                item = take_item(tab, spec.id)
+                if item then break end
+            end
+            if item then
+                local contents = item.sub_item_table_func and item.sub_item_table_func() or item.sub_item_table or {}
+                local tab = { icon = item.icon, remember = item.remember, _inkbridge_grid = true,
+                    _inkbridge_items = item.sub_item_table_func, [spec.marker] = true }
+                for _, child in ipairs(contents) do tab[#tab + 1] = child end
+                table.insert(tabs, math.min(position, #tabs + 1), tab)
+                changed = true
+            end
+        end
     end
-    if not item then return false end
-
-    -- KOReader 的 tab 是带 icon 的菜单数组；孤儿项会被移进现有 tab。
-    local contents = item.sub_item_table_func and item.sub_item_table_func() or item.sub_item_table or {}
-    local bridge_tab = { icon = item.icon, remember = item.remember, _inkbridge_tab = true }
-    for _, child in ipairs(contents) do bridge_tab[#bridge_tab + 1] = child end
-    tabs[#tabs + 1] = bridge_tab
-    return true
+    return changed
 end
 
 function InkBridge._install_menu_promoter(menu)
@@ -174,6 +189,7 @@ function InkBridge:init()
     self.server = G_reader_settings:readSetting("inkbridge_webdav_server")
 
     self:_install_menu_icon()
+    require("inkbridge_menu").install()
 
     -- 仅仅被 PluginLoader 识别，还不会自动出现在阅读菜单里。
     -- ReaderMenu 只会调用已经注册到 registered_widgets 的插件的
@@ -195,14 +211,20 @@ function InkBridge:_install_menu_icon()
         local util = require("util")
         local icons = DataStorage:getDataDir() .. "/icons"
         util.makePath(icons)
-        local target = icons .. "/inkbridge-bridge.png"
-        if require("libs/libkoreader-lfs").attributes(target, "mode") == "file" then return end
-        local source = assert(io.open(self.path .. "/inkbridge-bridge.png", "rb"))
-        local data = source:read("*a")
-        source:close()
-        local output = assert(io.open(target, "wb"))
-        output:write(data)
-        output:close()
+        for _, name in ipairs({ "inkbridge-bridge.png", "inkbridge-ink.png" }) do
+            local target = icons .. "/" .. name
+            local source = assert(io.open(self.path .. "/" .. name, "rb"))
+            local data = source:read("*a")
+            source:close()
+            local installed = io.open(target, "rb")
+            local current = installed and installed:read("*a")
+            if installed then installed:close() end
+            if current ~= data then
+                local output = assert(io.open(target, "wb"))
+                output:write(data)
+                output:close()
+            end
+        end
     end)
     if not ok then
         local logger_ok, logger = pcall(require, "logger")
@@ -411,6 +433,8 @@ function InkBridge:_sync(entry, mode, options)
         return
     end
 
+    -- 本机章节只写首页缓存，紧凑云端载荷仍由 State 白名单序列化。
+    entry.home_chapter = require("inkbridge_home_history").captureChapter(self.ui, entry)
     local history_name = self:_history_name(entry)
     local history_path = self:_staging_dir() .. "/" .. history_name
     -- 上传历史文件本身，避免每次上传覆盖同一个云端对象。
@@ -650,7 +674,7 @@ end
 
 function InkBridge:show_sync_status()
     local rows = self:_sync_status_rows()
-    local ok, KeyValuePage = pcall(require, "ui/widget/keyvaluepage")
+    local ok, KeyValuePage = pcall(Material.widget, "keyvaluepage")
     if ok and type(KeyValuePage) == "table" and type(KeyValuePage.new) == "function" then
         UIManager:show(KeyValuePage:new{
             title = "InkBridge+ · 同步状态",
@@ -754,10 +778,10 @@ end
 -- 高级选项:低频设置全部收在这里,一级只留"上传/下载"两个动作。
 function InkBridge:_advanced_menu()
     return {
-        { text = "修改设备名称（当前：" .. tostring(self.device_label or "KOReader") .. "）",
+        { text = "修改设备名称（当前：" .. tostring(self.device_label or "KOReader") .. "）", short_text = "设备名称", icon = "edit",
           help_text = "默认自动读设备型号；两台设备同名会导致记录被当成同一台",
           callback = function() self:set_device_label() end },
-        { text = "打开书时自动核对云端更新",
+        { text = "打开书时自动核对云端更新", short_text = "自动核对", icon = "cre.render.reload",
           help_text = "只在你已经联网时检查；不会自己开 Wi-Fi",
           checked_func = function() return self:auto_check_enabled() end,
           callback = function()
@@ -767,14 +791,14 @@ function InkBridge:_advanced_menu()
           end },
         -- 写回不在菜单里放"按钮":上传进度时会自动写(见 _sync 的成功回调)。
         -- 这里只留一个开关,因为它是**覆盖另一台设备状态**的动作。
-        { text = "上传时自动写入静读天下",
+        { text = "上传时自动写入静读天下", short_text = "自动写回", icon = "move.up",
           checked_func = function() return Moonsync.auto_enabled() end,
           callback = function()
               Moonsync.set_auto(not Moonsync.auto_enabled())
               show("墨桥：上传时自动写入静读天下已"
                   .. (Moonsync.auto_enabled() and "开启。" or "关闭。"))
           end },
-        { text = "存储选项", sub_item_table_func = function() return self:_webdav_menu() end },
+        { text = "存储选项", icon = "appbar.filebrowser", sub_item_table_func = function() return self:_webdav_menu() end },
         -- 检查更新**不单独占一项** —— 它和"看版本号"是同一件事,
         -- 摆两处等于让用户猜哪个才是真的。点「关于插件」里的版本号即可。
         { text = "关于插件",
@@ -791,9 +815,7 @@ function InkBridge:_advanced_menu()
     }
 end
 
--- 检查更新:只查、不装。
--- 自动安装要替换正在运行的插件目录,失败会让插件变砖 —— 而它恰恰是"修插件"的工具,
--- 所以先只把"有没有新版"说清楚(完整设计见 research/ 的笔记)。
+-- 检查更新。发现新版后必须由用户确认，下载、校验和替换成功后再提示重启。
 function InkBridge:check_update()
     self:_with_network(function()
         show("墨桥：正在检查更新…")
@@ -850,8 +872,13 @@ function InkBridge:_do_check_update()
         return
     end
 
+    if Update.compare_versions((rel.tag:gsub("^v", "")), Meta.version or "?") > 0 then
+        self:_confirm_install_update(rel)
+        return
+    end
+
     local kv = Update.describe(tostring(Meta.version or "?"), rel)
-    local ok_kv, KeyValuePage = pcall(require, "ui/widget/keyvaluepage")
+    local ok_kv, KeyValuePage = pcall(Material.widget, "keyvaluepage")
     if ok_kv and type(KeyValuePage) == "table" and KeyValuePage.new then
         UIManager:show(KeyValuePage:new{ title = "墨桥 · 检查更新", kv_pairs = kv })
         return
@@ -862,6 +889,121 @@ function InkBridge:_do_check_update()
         lines[#lines + 1] = tostring(row[1]) .. "：" .. tostring(row[2])
     end
     show("墨桥 · 检查更新\n" .. table.concat(lines, "\n"))
+end
+
+local function plugin_directory()
+    local source = debug.getinfo(1, "S").source or ""
+    source = source:sub(1, 1) == "@" and source:sub(2) or source
+    return source:match("^(.*)[/\\][^/\\]+$")
+end
+
+function InkBridge:_install_update(rel)
+    if type(rel) ~= "table" or type(rel.asset_url) ~= "string"
+            or type(rel.asset_name) ~= "string" then
+        return false, "GitHub 发布没有可下载的 ZIP 安装包"
+    end
+    local digest = Update.sha256_digest(rel.asset_digest)
+    if not digest then
+        return false, "GitHub 发布没有可验证的 SHA-256，已拒绝安装"
+    end
+    if rel.asset_url:sub(1, #"https://github.com/" .. Update.REPO .. "/releases/download/")
+            ~= "https://github.com/" .. Update.REPO .. "/releases/download/" then
+        return false, "更新下载地址不是官方 GitHub Release 地址"
+    end
+    if rel.asset_name ~= "inkbridge.moon.koplugin-" .. rel.tag .. ".zip"
+            or (tonumber(rel.asset_size) or 0) > 20 * 1024 * 1024 then
+        return false, "更新包名称或大小不符合预期"
+    end
+    local ok_util, util = pcall(require, "util")
+    local ok_ds, data_storage = pcall(require, "datastorage")
+    local ok_http, http = pcall(require, "socket.http")
+    local ok_ltn12, ltn12 = pcall(require, "ltn12")
+    if not (ok_util and ok_ds and ok_http and ok_ltn12) then
+        return false, "本机缺少自动更新所需模块"
+    end
+
+    local root = data_storage:getDataDir() .. "/inkbridge-update"
+    local archive = root .. "/" .. rel.asset_name:gsub("[^%w%._%-]", "_")
+    util.makePath(root)
+    local file = io.open(archive, "wb")
+    if not file then return false, "无法创建更新下载文件" end
+    local ok_sockutil, socketutil = pcall(require, "socketutil")
+    if ok_sockutil then socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT) end
+    local downloaded, limit = 0, tonumber(rel.asset_size)
+    local sink = function(chunk, sink_err)
+        if chunk then
+            downloaded = downloaded + #chunk
+            if downloaded > 20 * 1024 * 1024 or (limit and downloaded > limit) then
+                return nil, "更新包超过声明大小限制"
+            end
+            local wrote, write_err = file:write(chunk)
+            if not wrote then return nil, write_err end
+        else
+            return file:close()
+        end
+        return 1
+    end
+    local request_ok, result, status = pcall(function()
+        local transport_result, http_code = http.request{
+            url = rel.asset_url,
+            method = "GET",
+            sink = sink,
+            headers = {
+                ["User-Agent"] = "inkbridge-koplugin",
+                ["Accept"] = "application/octet-stream",
+            },
+        }
+        return transport_result, http_code
+    end)
+    if ok_sockutil then socketutil:reset_timeout() end
+    if not request_ok then
+        file:close()
+        os.remove(archive)
+        return false, "下载更新包失败：" .. tostring(result)
+    end
+    if tonumber(status) ~= 200 then
+        file:close()
+        os.remove(archive)
+        return false, "下载更新包失败：HTTP " .. tostring(status or result)
+    end
+    if downloaded ~= limit then
+        os.remove(archive)
+        return false, "下载文件大小与 GitHub 声明不一致"
+    end
+
+    local Installer = require("inkbridge_update_install")
+    local installed, err = Installer.install(archive, plugin_directory(), digest,
+        rel.tag, { digest_matches = Update.digest_matches })
+    if not installed then return false, err end
+    return true
+end
+
+function InkBridge:_confirm_install_update(rel)
+    UIManager:show(ConfirmBox:new{
+        text = "发现新版本 " .. tostring(rel.tag)
+            .. "。将下载并替换墨桥插件，完成后需要重启 KOReader。\n\n继续吗？",
+        ok_text = "下载并安装",
+        cancel_text = "取消",
+        ok_callback = function()
+            show("墨桥：正在下载更新…")
+            UIManager:nextTick(function()
+                local ok, err = self:_install_update(rel)
+                if not ok then
+                    show("墨桥：更新失败。\n" .. tostring(err))
+                    return
+                end
+                UIManager:show(ConfirmBox:new{
+                    text = "墨桥已更新到 " .. tostring(rel.tag) .. "。请重启 KOReader 使新版本生效。",
+                    ok_text = "立即重启",
+                    cancel_text = "稍后重启",
+                    ok_callback = function()
+                        if UIManager.restartKOReader then UIManager:restartKOReader()
+                        else UIManager:quit() end
+                    end,
+                })
+            end)
+        end,
+    })
 end
 
 -- ── 打开书时自动核对云端有没有更新的进度 ──────────────────────────────────
@@ -1031,35 +1173,52 @@ function InkBridge:addToMainMenu(menu_items)
     menu_items.inkbridge = {
         icon = "inkbridge-bridge",
         text = "InkBridge+ v" .. tostring(Meta.version or "unknown"),
-        -- KOReader 的主菜单使用 sub_item_table_func 动态生成子菜单。
-        -- 动态函数比直接写 sub_item_table 更兼容不同 KOReader 版本，
-        -- 也能保证每次打开菜单时都拿到当前插件实例。
         sub_item_table_func = function()
-            local items = {}
-
-            -- 一级只留两个动作之后,新用户会不知道去哪配云同步 ——
-            -- 所以未配置时在**最上面**放一条引导,配好之后它自己就消失了。
+            local items = {
+                { text = "上传", icon = "move.up", callback = function() self:upload_current() end },
+                { text = "下载", icon = "move.down", callback = function() self:download_current() end },
+                { text = "同步", icon = "cre.render.reload",
+                    help_text = "查看当前书、本地位置和同步目标，不联网不写入",
+                    callback = function() self:show_sync_status() end },
+                { text = "高级", icon = "appbar.tools",
+                    sub_item_table_func = function() return self:_advanced_menu() end },
+            }
             if not self:_has_server() then
-                table.insert(items, {
-                    text = "⚠ 尚未设置云同步，点此配置",
-                    callback = function() WebDAV.pick_server(self) end,
-                })
+                items[#items + 1] = { text = "尚未设置云同步，点此配置", _inkbridge_setup = true,
+                    callback = function() WebDAV.pick_server(self) end }
             end
-
-            table.insert(items, { text = "同步状态",
-                                  help_text = "查看当前书、本地位置和同步目标，不联网不写入",
-                                  callback = function() self:show_sync_status() end })
-            table.insert(items, { text = "上传阅读进度",
-                                  callback = function() self:upload_current() end })
-            table.insert(items, { text = "下载阅读进度",
-                                  callback = function() self:download_current() end })
-            table.insert(items, { text = "高级选项",
-                                  sub_item_table_func = function()
-                                      return self:_advanced_menu()
-                                   end })
-            table.insert(items, { text = "打开墨桥首页",
-                                  callback = function() require("inkbridge_home").show(self) end })
             return items
+        end,
+    }
+    menu_items.inkbridge_book = {
+        icon = "inkbridge-ink", text = "墨 · 书籍调校",
+        sub_item_table_func = function()
+            local function readerAction(module, method)
+                return function()
+                    local reader = self.ui
+                    if reader and reader.document and reader[module] and type(reader[module][method]) == "function" then
+                        reader[module][method](reader[module])
+                    else show("墨：请先打开一本书，再使用这项功能。") end
+                end
+            end
+            local function available(module, method)
+                return function()
+                    return self.ui and self.ui.document ~= nil and self.ui[module]
+                        and type(self.ui[module][method]) == "function" or false
+                end
+            end
+            return {
+                { text = "书籍重构", icon = "appbar.typeset",
+                    help_text = "提取纯文字、整理章节并另存 EPUB，保留原书；请先打开 EPUB 小说",
+                    callback = function() require("inkbridge_rebuild_ui").show(self) end },
+                { text = "章节跳转", icon = "appbar.navigation", enabled_func = available("toc", "onShowToc"),
+                    callback = readerAction("toc", "onShowToc") },
+                { text = "内容搜索", icon = "appbar.search", enabled_func = available("search", "onShowFulltextSearchInput"),
+                    callback = readerAction("search", "onShowFulltextSearchInput") },
+                { text = "快速跳转", icon = "chevron.right", enabled_func = available("gotopage", "onShowGotoDialog"),
+                    callback = readerAction("gotopage", "onShowGotoDialog") },
+                { text = "首页", icon = "home", callback = function() require("inkbridge_home").show(self) end },
+            }
         end,
     }
 end

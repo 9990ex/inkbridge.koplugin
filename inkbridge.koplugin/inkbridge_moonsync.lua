@@ -25,10 +25,11 @@
 local Moon        = require("inkbridge_moon")
 local Txt         = require("inkbridge_moontxt")
 local WebDAV      = require("inkbridge_webdav")
-local ConfirmBox  = require("ui/widget/confirmbox")
-local InfoMessage = require("ui/widget/infomessage")
-local ButtonDialog = require("ui/widget/buttondialog")
-local InputDialog  = require("ui/widget/inputdialog")
+local Material = require("inkbridge_material")
+local ConfirmBox = Material.widget("confirmbox")
+local InfoMessage = Material.widget("infomessage")
+local ButtonDialog = Material.widget("buttondialog")
+local InputDialog = Material.widget("inputdialog")
 local UIManager   = require("ui/uimanager")
 
 local Moonsync = {}

@@ -65,8 +65,9 @@ do
         html_url = "https://github.com/9990ex/inkbridge.koplugin/releases/tag/v0.2.25-alpha",
         prerelease = false,
         assets = {
-            { name = "inkbridge.koplugin-v0.2.25-alpha.zip",
-              browser_download_url = "https://example.com/a.zip", size = 59026 },
+         { name = "inkbridge.koplugin-v0.2.25-alpha.zip",
+              browser_download_url = "https://example.com/a.zip", size = 59026,
+              digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" },
         },
     }
     local rel, err = Update.parse_release('{"anything":1}', decoder_returning(payload))
@@ -77,6 +78,8 @@ do
         eq("挑出 zip 资产", rel.asset_name, "inkbridge.koplugin-v0.2.25-alpha.zip")
         eq("资产地址", rel.asset_url, "https://example.com/a.zip")
         eq("资产大小", rel.asset_size, 59026)
+        eq("资产 SHA-256", rel.asset_digest,
+           "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         eq("页面地址", rel.page_url, payload.html_url)
     end
     check("JSON 原文确实被传给了解码器",
@@ -114,6 +117,22 @@ do
     eq("限流要当失败", rl, nil)
     check("限流原因里带上 GitHub 的原话",
           type(rl_err) == "string" and rl_err:find("rate limit", 1, true) ~= nil, rl_err)
+end
+
+-- ── 安装包校验与 ZIP 路径守卫 ───────────────────────────────────────────────
+print("== 安装包校验与路径守卫 ==")
+do
+    local digest = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+    eq("识别 GitHub sha256 digest", Update.sha256_digest("sha256:" .. digest), digest)
+    eq("拒绝短 digest", Update.sha256_digest("sha256:abcd"), nil)
+    check("digest 比较不区分大小写", Update.digest_matches(digest:upper(), "sha256:" .. digest))
+    check("拒绝非十六进制原始摘要", not Update.digest_matches(digest, string.rep("z", 64)))
+    check("digest 不匹配会拒绝", not Update.digest_matches(string.rep("0", 64), "sha256:" .. digest))
+    check("允许插件文件", Update.is_safe_archive_path("inkbridge.koplugin/main.lua"))
+    check("拒绝父目录穿越", not Update.is_safe_archive_path("inkbridge.koplugin/../main.lua"))
+    check("拒绝绝对路径", not Update.is_safe_archive_path("/inkbridge.koplugin/main.lua"))
+    check("拒绝反斜杠路径", not Update.is_safe_archive_path("inkbridge.koplugin\\main.lua"))
+    check("拒绝插件目录外文件", not Update.is_safe_archive_path("other/main.lua"))
 end
 
 -- ── 展示内容 ───────────────────────────────────────────────────────────────

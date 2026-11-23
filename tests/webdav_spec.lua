@@ -17,6 +17,7 @@
 -- ============================================================================
 
 -- ── 0. 定位插件目录 ─────────────────────────────────────────────────────
+dofile("tests/material_business_stub.lua")
 local script_path = arg and arg[0] or "tests/webdav_spec.lua"
 local script_dir  = script_path:match("^(.*)[/\\][^/\\]*$") or "."
 local PLUGIN_DIR  = script_dir .. "/../inkbridge.koplugin"
@@ -421,6 +422,42 @@ end
 local function plan_ui(doc, rolling)
     if rolling == "none" then return { document = doc } end
     return { document = doc, rolling = rolling or { getLastProgress = function() end } }
+end
+
+do
+    local old_http, old_socketutil = package.loaded["socket.http"], package.loaded["socketutil"]
+    local util = require("util")
+    local old_encode = util.urlEncode
+    util.urlEncode = function(path) return path end
+    local status, request_count, request_seen = "204", 0, nil
+    package.loaded["socket.http"] = { request = function(request)
+        request_count = request_count + 1
+        request_seen = request
+        return 1, status
+    end }
+    package.loaded["socketutil"] = {
+        FILE_BLOCK_TIMEOUT = 1, FILE_TOTAL_TIMEOUT = 2,
+        set_timeout = function() end, reset_timeout = function() end,
+    }
+    local p, _, calls = make_env{ listing = {} }
+    p.server.address = "https://dav.example/base"
+    local function conditional(etag)
+        return invoke(function(cb) WebDAV.delete_file(p, "/books/one.txt", cb, etag) end)
+    end
+    local r = conditional('"version-1"')
+    eq("If-Match 条件删除成功", r[1], true)
+    eq("条件请求携带强 ETag", request_seen.headers["If-Match"], '"version-1"')
+    eq("条件删除 URL 保持目标服务器", request_seen.url, "https://dav.example/base/books/one.txt")
+    status = "412"
+    r = conditional('"version-1"')
+    eq("云端版本变化时拒绝条件删除", r[1], false)
+    local before = request_count
+    r = conditional('W/"weak"')
+    eq("弱 ETag 删除被拒绝", r[1], false)
+    eq("弱 ETag 不发网络请求", request_count, before)
+    eq("条件删除不使用无条件 provider 删除", calls.deleted, nil)
+    package.loaded["socket.http"], package.loaded["socketutil"] = old_http, old_socketutil
+    util.urlEncode = old_encode
 end
 
 do

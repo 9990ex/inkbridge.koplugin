@@ -250,6 +250,7 @@ local REAL_ENTRY = {
     xpointer = "/body/DocFragment[138]/body/div/p[41]/text().0",
     text_anchor = "楼里终于清静了，铁寒锋肚子里的疑问比徒弟还多",
     updated_at = 1791262716,
+    home_chapter = "仅供本机首页显示的章节",
 }
 
 do
@@ -259,6 +260,7 @@ do
         and payload.di == REAL_ENTRY.device_id and payload.dl == "c7t")
     eq("不写入 book_file（上传方本机绝对路径）", payload.book_file, nil)
     eq("不写入 book_name（云端文件名已含书名）", payload.book_name, nil)
+    eq("首页章节不进入同步载荷", payload.home_chapter, nil)
     eq("内容比例保留 5 位小数", payload.pp, 0.11179)
     eq("页序比例保留 5 位小数", payload.p, 0.11208)
     eq("xpointer 原样保留", payload.xp, REAL_ENTRY.xpointer)

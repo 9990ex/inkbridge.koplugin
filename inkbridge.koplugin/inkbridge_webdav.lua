@@ -6,10 +6,11 @@
 -- 这样可以直接使用 KOReader 已经验证过的云存储代码。
 
 local UIManager = require("ui/uimanager")
-local InfoMessage = require("ui/widget/infomessage")
-local ConfirmBox = require("ui/widget/confirmbox")
+local Material = require("inkbridge_material")
+local InfoMessage = Material.widget("infomessage")
+local ConfirmBox = Material.widget("confirmbox")
 local Event = require("ui/event")
-local ButtonDialog = require("ui/widget/buttondialog")
+local ButtonDialog = Material.widget("buttondialog")
 local util = require("util")
 local State = require("inkbridge_state")
 
@@ -387,23 +388,23 @@ function WebDAV.download(plugin, remote_path, callback)
     -- 临时使用已保存 server 的副本，完成后恢复原对象，避免影响云存储界面。
     provider.base = provider_base(server)
     local finished = false
-    local function finish(ok, remote, err)
+    local function finish(ok, remote, err, etag)
         if finished then return end
         finished = true
         provider.base = old_base
         os.remove(path)
-        callback(ok, remote, err)
+        callback(ok, remote, err, etag)
     end
     local function request()
         local ok, code_or_err = pcall(function()
-            local code = provider.downloadFile(remote_path, path)
+            local code, etag = provider.downloadFile(remote_path, path)
             if code == 200 then
                 local State = require("inkbridge_state")
                 local remote, err = State.read_file(path)
                 if not remote then
                     finish(false, nil, "remote_record_" .. tostring(err))
                 else
-                    finish(true, remote, nil)
+                    finish(true, remote, nil, etag)
                 end
             elseif code == 404 then
                 finish(true, nil, "missing")
@@ -489,7 +490,29 @@ end
 --   * **不抛异常**。调用方都在"上传成功"之后,删不掉一条旧记录绝不能让人以为上传失败了。
 --
 -- 回调 (ok, err)。
-function WebDAV.delete_file(plugin, url, callback)
+function WebDAV.strong_etag(etag)
+    return type(etag) == "string" and etag:sub(1, 1) == '"' and etag:sub(-1) == '"'
+        and #etag >= 2 and not etag:sub(2, -2):find('[%c" ]')
+end
+
+-- KOReader 的 provider DELETE 不支持 If-Match；仅书库单条删除走条件请求。
+local function delete_if_match(server, url, etag)
+    local http = require("socket.http")
+    local timeouts = require("socketutil")
+    local path = server.address:gsub("/+$", "") .. "/" .. util.urlEncode(url, "/"):gsub("^/+", "")
+    timeouts:set_timeout(timeouts.FILE_BLOCK_TIMEOUT, timeouts.FILE_TOTAL_TIMEOUT)
+    local ok, code = pcall(function()
+        local _, status = http.request{
+            url = path, method = "DELETE", user = server.username, password = server.password,
+            redirect = false, headers = { ["If-Match"] = etag },
+        }
+        return tonumber(status)
+    end)
+    timeouts:reset_timeout()
+    return ok and type(code) == "number" and code >= 200 and code < 300
+end
+
+function WebDAV.delete_file(plugin, url, callback, etag)
     if type(callback) ~= "function" then return end
     local server = plugin and plugin.server
     if type(server) ~= "table" or server.type ~= "webdav" then
@@ -498,6 +521,10 @@ function WebDAV.delete_file(plugin, url, callback)
     end
     if not is_safe_remote_path(url) then
         callback(false, "invalid remote path")
+        return
+    end
+    if etag ~= nil and not WebDAV.strong_etag(etag) then
+        callback(false, "invalid WebDAV ETag")
         return
     end
 
@@ -522,7 +549,10 @@ function WebDAV.delete_file(plugin, url, callback)
     end
 
     local function request()
-        local ok, result = pcall(function() return provider.deleteFile(url) end)
+        local ok, result = pcall(function()
+            if etag ~= nil then return delete_if_match(server, url, etag) end
+            return provider.deleteFile(url)
+        end)
         if not ok then finish(false, tostring(result)); return end
         if result then finish(true, nil) else finish(false, "WebDAV delete failed") end
     end
@@ -538,7 +568,7 @@ end
 -- 已经验证可用的路。列表只读元数据,**不消耗网盘的下载额度**。
 --
 -- folder_path 以 "/" 开头表示从服务器根算起,否则相对 server.url。
-function WebDAV.list_folder(plugin, folder_path, callback)
+function WebDAV.list_folder(plugin, folder_path, callback, include_folders)
     local server = plugin and plugin.server
     if type(server) ~= "table" or server.type ~= "webdav" then
         callback(false, nil, "WebDAV destination is not configured")
@@ -604,7 +634,7 @@ function WebDAV.list_folder(plugin, folder_path, callback)
         if type(result) ~= "table" then finish(false, nil, "WebDAV list failed"); return end
         local out = {}
         for _, item in ipairs(result) do
-            if item.is_file then out[#out + 1] = item end
+            if item.is_file or (include_folders and item.is_folder) then out[#out + 1] = item end
         end
         finish(true, out, nil)
     end

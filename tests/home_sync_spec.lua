@@ -5,7 +5,7 @@ local function check(label, ok)
     if ok then passed = passed + 1 else failed = failed + 1; print("FAIL " .. label) end
 end
 local values, queue, timers, online, calls, results
-local lists, payloads, moons, positions, identity
+local lists, payloads, moons, positions, identity, delete_count, delete_ok, deleted_paths
 G_reader_settings = {
     readSetting = function(_, k) return values[k] end,
     saveSetting = function(_, k, v) values[k] = v end,
@@ -35,8 +35,12 @@ package.preload.inkbridge_webdav = function() return {
         if downloader then return downloader(path, cb) end
         cb(payloads[path] ~= false, payloads[path])
     end,
+    delete_file = function(plugin, path, cb)
+        delete_count = delete_count + 1
+        deleted_paths[#deleted_paths + 1] = path
+        cb(delete_ok, delete_ok and nil or "server refused")
+    end,
     upload = function() error("首页绝不允许上传") end,
-    delete_file = function() error("首页绝不允许删除") end,
     confirm_jump = function() error("首页刷新绝不允许跳转") end,
 } end
 package.preload.inkbridge_moon = function() return { parse = function(body) return body ~= "bad" and { raw = body } or nil end } end
@@ -44,6 +48,7 @@ package.preload.inkbridge_moonsync = function() return {
     fetch_po = function(proxy)
         calls.moon = calls.moon + 1
         check("Moon独立上下文不借用文件管理器", proxy.ui ~= calls.real_ui and proxy.ui.document.file ~= nil)
+        if moons == "throw" then error("Moon provider error") end
         return moons
     end,
     position_from_po = function(file, po)
@@ -57,6 +62,7 @@ local plugin, books
 local function reset()
     values, queue, timers, results = {}, {}, {}, {}
     online, lists, payloads, moons, positions, identity = true, {}, {}, nil, nil, nil
+    delete_count, delete_ok, deleted_paths = 0, true, {}
     calls = { list = 0, download = 0, moon = 0, map = 0, prefixes = {} }
     downloader = nil
     plugin = { server = { type = "webdav" }, ui = { untouched = true } }
@@ -91,7 +97,8 @@ check("空云端仍明确完成", #results == 2 and results[2].ok)
 check("完成取消超时和锁", next(timers) == nil and not Sync.running)
 check("空数据不伪造正文", #History.load().books == 0)
 
-reset(); lists = { { url = "same-prefix-wrong-book" }, { url = "valid" }, { url = "empty" } }
+reset(); lists = { { url = "same-prefix-wrong-book" },
+    { url = "valid", text = "valid.InkBridge.txt" }, { url = "empty" } }
 payloads["same-prefix-wrong-book"] = record("异书正文", "book-a-other-full-hash")
 payloads.valid = record("真实云端墨桥正文")
 payloads.empty = record(nil)
@@ -102,6 +109,7 @@ check("保留远端设备来源", r[1].source == "墨桥 · Kindle")
 check("保留原时间而非下载时间", r[1].time == 100)
 check("原文件管理器未伪装打开文档", plugin.ui.document == nil and plugin.ui.untouched)
 check("通过短哈希筛选请求", calls.prefixes[1] == "book-a-f")
+check("首页只读刷新绝不删除云端", delete_count == 0)
 
 reset(); lists = { { url = "dup1" }, { url = "dup2" } }
 payloads.dup1, payloads.dup2 = record("相同正文"), record("相同正文")
@@ -133,6 +141,12 @@ refresh(); drain()
 check("部分失败不丢另一来源", History.load().books[1].records[1].text == positions.snippet)
 check("部分失败明确提示", results[1].message:find("未取到", 1, true) ~= nil)
 
+reset(); moons = "throw"
+books[2] = { file = "book-b", title = "B" }
+refresh(); drain()
+check("静读来源异常不阻断同页剩余书籍", calls.list == 2 and calls.moon == 2
+    and #results == 1 and results[1].ok and results[1].message:find("部分来源", 1, true))
+
 reset(); lists = "throw"; refresh(); drain()
 check("provider异常解锁并报告失败", not Sync.running and #results == 1 and not results[1].ok)
 reset(); identity = "missing"; refresh(); drain()
@@ -156,5 +170,47 @@ reset(); History.add("book-a", record("保留原缓存"), "墨桥", 100, "book-a
 lists = { { url = "failure" } }; payloads.failure = false
 refresh(); drain()
 check("读取失败不清空既有缓存", History.load().books[1].records[1].text == "保留原缓存")
+
+reset()
+lists = { { url = "safe-url" }, { url = "second-safe-url" }, { url = "prefix-collision" } }
+payloads["safe-url"] = record("本书云端正文", "book-a-full-hash", 100)
+payloads["second-safe-url"] = record("本书另一条云端正文", "book-a-full-hash", 102)
+payloads["prefix-collision"] = record("异书云端正文", "book-a-other-full-hash", 101)
+History.add("book-a", record("本机缓存"), "墨桥", 200, "book-a-full-hash")
+local delete_result
+Sync.delete_book_remote(plugin, { file = "book-a", book_id = "book-a-full-hash" },
+    function(ok, message) delete_result = { ok, message } end)
+check("仅删除完整书籍身份匹配的云端文件", delete_result and delete_result[1]
+    and delete_count == 2 and deleted_paths[1] == "safe-url" and deleted_paths[2] == "second-safe-url")
+check("云端批量删除保留本地缓存", #History.load().books == 1
+    and History.load().books[1].records[1].text == "本机缓存")
+
+reset()
+lists = { { url = "wrong-book" } }
+payloads["wrong-book"] = record("云端正文", "book-a-full-hash", 100)
+delete_result = nil
+Sync.delete_book_remote(plugin, { file = "book-a", book_id = "stale-book-id" },
+    function(ok, message) delete_result = { ok, message } end)
+check("本机书籍身份变化时拒绝整批云端删除", delete_result and not delete_result[1] and delete_count == 0)
+
+reset()
+lists = { { url = "valid-first" }, { url = "broken-second" } }
+payloads["valid-first"] = record("本书云端正文", "book-a-full-hash", 100)
+payloads["broken-second"] = false
+delete_result = nil
+Sync.delete_book_remote(plugin, { file = "book-a", book_id = "book-a-full-hash" },
+    function(ok, message) delete_result = { ok, message } end)
+check("云端预检未全部完成时拒绝任何删除", delete_result and not delete_result[1] and delete_count == 0)
+
+reset()
+lists = { { url = "refused" } }
+payloads.refused = record("服务器拒绝的正文", "book-a-full-hash", 100)
+History.add("book-a", record("本机缓存保留"), "墨桥", 100, "book-a-full-hash")
+delete_ok = false
+delete_result = nil
+Sync.delete_book_remote(plugin, { file = "book-a", book_id = "book-a-full-hash" },
+    function(ok, message) delete_result = { ok, message } end)
+check("服务器拒绝时本机缓存保留", delete_result and not delete_result[1]
+    and delete_count == 1 and History.load().books[1].records[1].text == "本机缓存保留")
 print(string.format("合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)

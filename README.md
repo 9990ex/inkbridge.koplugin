@@ -1,8 +1,14 @@
 # InkBridge+ / 墨桥+
 
-面向 KOReader 的跨平台阅读进度同步项目。
+面向 KOReader 的书籍调校与跨平台阅读进度同步插件。
 
-InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界面连接不同平台的 KOReader 设备，让阅读位置可以在 Kindle、Android、汉王等设备之间可靠地往返同步。
+InkBridge+（墨桥+）继承 InkBridge 的同步能力，以「墨」整理书籍和阅读界面，以「桥」连接不同设备的阅读位置。
+
+[下载最新版](https://github.com/9990ex/inkbridge.koplugin/releases/latest) · [0.3.30 图文指南](docs/v0.3.30-guide.md) · [完整使用说明](inkbridge.koplugin/README.md)
+
+![统一阅读记录卡片：来源、时间、章节与正文摘要](docs/images/v0.3.30/reading-records.png)
+
+新增的阅读记录页将本机阅读历史与同步记录管理放到一起；EPUB 元数据编辑器同时提供文件名编辑入口。更多实际界面和操作步骤见 [图文指南](docs/v0.3.30-guide.md)。
 
 ## 第一阶段目标
 
@@ -33,7 +39,7 @@ InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界�
 
 ## 当前状态
 
-**当前开发版本为 0.3.20-alpha**。安装包只在完整回归校验通过后由项目打包器生成；此版本修复检查更新时误报连接失败及响应正文未保存的问题。
+**当前版本为 0.3.30-alpha**。顶栏前两项为平级的「桥、墨」：双向箭头表示跨设备同步，调节滑杆表示书籍调校。书籍详情统一提供「阅读记录」，卡片同时显示时间、来源、章节与摘要，点开后查看全文、跳转或逐条确认删除；最近阅读时间也在同页。文件名编辑并入 EPUB 元数据编辑器，改名后保留未保存的元信息草稿。本地／WebDAV、文件夹浏览、离线农历和真实章节选段均保留。
 0.3.0 是正式版基线；之后的小改动继续走 **`0.3.x-alpha`**（0.3.1-alpha、0.3.2-alpha…），
 不跳大版本号。
 上传、下载与跨设备跳转已在 Android 与 Kindle 设备上实测；具体覆盖范围和精度限制见插件说明。
@@ -49,7 +55,7 @@ InkBridge+（墨桥+）继承 InkBridge 的同步能力，专注于用轻量界�
    - Kobo：`.adds/koreader/plugins/`
    - Kindle：`koreader/plugins/`
    - Android：`/sdcard/koreader/plugins/`
-4. 完整重启 KOReader，点击顶栏独立的 **桥** 页签进入墨桥。
+4. 完整重启 KOReader，顶栏 **桥** 用于跨设备同步，旁边的 **墨** 用于书籍工具与首页。
 
 首次使用从 **桥 → 高级选项 → 存储选项 → 墨桥同步目录** 配置云同步
 （只配了一台服务器时会直接进目录浏览），并在里面**长按**「Long-press here to choose current folder」
@@ -80,7 +86,7 @@ InkBridge 是独立项目，与 Syncery 没有官方隶属关系。早期设计�
 ## 开发方式
 
 **Powered by DeepSeek** —— 本项目的代码、回归测试与文档均在 DeepSeek 的辅助下完成。
-所有改动都要跑过 933 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
+当前版本通过 18 组、1930 条回归断言（不需要设备即可运行，见 [`DEVELOPMENT.md`](DEVELOPMENT.md)），
 关键链路由真机验证。
 
 > DeepSeek 在这里是开发工具。本项目与 DeepSeek 官方没有任何隶属关系。

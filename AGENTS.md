@@ -6,20 +6,29 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（1420 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（1930 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
    luajit tests/moon_spec.lua       # 163 条  位置格式与 URL/目录拼接
    luajit tests/moontxt_spec.lua    # 149 条  TXT 编码、UTF-16 分块显示坐标、短段确认回退与反向核对
    luajit tests/moonsync_spec.lua   # 392 条  静读天下互通（读、写、上传设备来源、平台、目录换算、导航单元与字符坐标）
-   luajit tests/update_spec.lua     #  48 条  版本比较与 release 解析
-   luajit tests/webdav_spec.lua     # 290 条  云存储层、实际排版行号与恢复原页、首页远端正文采集、重放去重
-   luajit tests/main_spec.lua       # 147 条  主流程、版本菜单、独立顶层图标页签与真实菜单结构提升、图标安装、关书自动上传、三条保留策略、设备名探测、同步状态页、更新请求完整流程与失败诊断
-   luajit tests/state_spec.lua      #  81 条  位置记录本身
-   luajit tests/home_spec.lua       # 107 条  书刊式主次排版、三书九条缓存与详情、生命周期、安全重放、原生Home接入、菜单手势、只读补全与元数据兜底
-   luajit tests/home_sync_spec.lua  #  43 条  首页只读补全、完整身份、限量、去重、离线、超时、部分失败与迟到回调
-   ```
+    luajit tests/update_spec.lua     #  59 条  版本比较、release 解析与安装包校验
+    luajit tests/update_install_spec.lua # 13 条  ZIP 拒绝、事务替换与失败恢复
+    luajit tests/webdav_spec.lua     # 297 条  云存储层、实际排版行号与恢复原页、首页远端正文采集、逐条条件删除
+     luajit tests/main_spec.lua       # 172 条  主流程、桥墨平级页签与顺序、书籍工具原生委托、图标安装、关书自动上传、保留策略、设备名探测、状态页与更新流程
+    luajit tests/menu_spec.lua       # 33 条  原生下拉圆形图标、透明背景、间距、去除黑色反馈、动作委托、页签隔离、窄屏与DPI、配置刷新、子菜单返回
+    luajit tests/rebuild_spec.lua    # 121 条  正文保留、章节识别与误判防护、卷层级、脚本内容、spine、打包回读、失败清理、取消、新副本身份、实际进度与节流
+   luajit tests/state_spec.lua      #  82 条  位置记录本身、首页章节不进入同步载荷
+      luajit tests/home_spec.lua       # 195 条  首页书库对齐、统一记录卡片、章节摘要、逐条确认删除、关闭返回、元信息入口、分页与生命周期
+     luajit tests/home_sync_spec.lua  #  52 条  首页只读补全、完整身份、限量、去重、离线、超时、部分失败、迟到回调与旧批量删除安全校验
+   luajit tests/library_spec.lua    # 41 条 本地及WebDAV递归目录扫描、文件夹层级、空目录、密度排序设置、目录优先级、取消、下载接口继承、完整身份归组与逐条删除守卫
+   luajit tests/calendar_spec.lua   # 23 条 离线农历、公农历对照、闰月、非法日期及支持边界
+   luajit tests/home_preview_spec.lua # 19 条 原书章节与正文选段、唯一锚点、标题与空章、跨文件续文、UTF8、分批读取、取消及原书身份变化守卫
+   luajit tests/book_files_spec.lua # 31 条 本地文件改名、阅读数据与历史迁移、保留保护、两种删除、名称与身份校验、操作失败与缓存隔离
+   luajit tests/material_spec.lua # 38 条 圆形图标与间距、去除反色、统一高度、模态层级、窄屏、卡片章节摘要、分页与返回
+   luajit tests/book_metadata_spec.lua # 50 条 本机元数据、身份校验、回读、四字段保存、内嵌改名与失败保护、改名后保留草稿
+    ```
 
    全绿才算过。需要 LuaJIT（与 KOReader 运行时同款）。新增 spec 请一并写进
    `tests/run_all.sh` 和本节 —— 漏掉一份，等于那个模块没人看着。
