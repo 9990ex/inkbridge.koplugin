@@ -6,7 +6,7 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（1976 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（1993 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
@@ -15,7 +15,7 @@
    luajit tests/moonsync_spec.lua   # 392 条  静读天下互通（读、写、上传设备来源、平台、目录换算、导航单元与字符坐标）
     luajit tests/update_spec.lua     #  59 条  版本比较、release 解析与安装包校验
     luajit tests/update_install_spec.lua # 13 条  ZIP 拒绝、事务替换与失败恢复
-    luajit tests/webdav_spec.lua     # 311 条  云存储层、实际排版行号与恢复原页、首页远端正文采集、逐条条件删除、同步前位置预览
+    luajit tests/webdav_spec.lua     # 324 条  云存储层、实际排版行号与恢复原页、首页远端正文采集、逐条条件删除、同步前位置预览、进度列表只读章节与原文补全
       luajit tests/main_spec.lua       # 199 条  主流程、桥墨平级页签与顺序、书籍工具原生委托、图标安装、关书自动上传、保留策略、设备名探测、状态页与更新流程、下载失败与安装异常
     luajit tests/menu_spec.lua       # 33 条  原生下拉圆形图标、透明背景、间距、去除黑色反馈、动作委托、页签隔离、窄屏与DPI、配置刷新、子菜单返回
     luajit tests/rebuild_spec.lua    # 121 条  正文保留、章节识别与误判防护、卷层级、脚本内容、spine、打包回读、失败清理、取消、新副本身份、实际进度与节流
@@ -26,7 +26,7 @@
    luajit tests/calendar_spec.lua   # 23 条 离线农历、公农历对照、闰月、非法日期及支持边界
    luajit tests/home_preview_spec.lua # 19 条 原书章节与正文选段、唯一锚点、标题与空章、跨文件续文、UTF8、分批读取、取消及原书身份变化守卫
    luajit tests/book_files_spec.lua # 31 条 本地文件改名、阅读数据与历史迁移、保留保护、两种删除、名称与身份校验、操作失败与缓存隔离
-    luajit tests/material_spec.lua # 43 条 圆形图标与间距、去除反色、统一高度、模态层级、窄屏、卡片章节摘要、分页与返回
+    luajit tests/material_spec.lua # 47 条 圆形图标与间距、去除反色、统一高度、模态层级、窄屏、卡片章节摘要、分页与返回、无图标进度选择与取消
    luajit tests/book_metadata_spec.lua # 50 条 本机元数据、身份校验、回读、四字段保存、内嵌改名与失败保护、改名后保留草稿
     ```
 

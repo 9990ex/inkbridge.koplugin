@@ -396,6 +396,12 @@ function InkBridge:_sync(entry, mode, options)
             Moonsync.peek_po(self, function(peek)
                 local extra = {
                     text = Moonsync.peek_label(peek, os.time(), Moonsync.local_position(self)),
+                    preview_entry = peek and function()
+                        local location = Moonsync.position_from_po(self.ui.document.file, peek.po)
+                        if not location then return end
+                        return { text_anchor = location.snippet, character_percent = location.character_percent,
+                            require_unique_text = true, device_label = "静读天下", updated_at = peek.modified }
+                    end or nil,
                     on_select = function()
                         if peek then
                             Moonsync.import_from_moon(self)

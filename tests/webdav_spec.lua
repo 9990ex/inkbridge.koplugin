@@ -1536,6 +1536,55 @@ do
     History.observe, WebDAV._plan_jump = old_observe, old_plan
 end
 
+do
+    local Material, State = require("inkbridge_material"), require("inkbridge_state")
+    local UI = require("ui/uimanager")
+    local saved_list, saved_download, saved_plan = Material.recordList, WebDAV.download, WebDAV._plan_jump
+    local saved_tick, saved_id = UI.nextTick, State.book_id
+    local options, pending, tick, requests, selected, captured = nil, nil, nil, 0, nil, 0
+    Material.recordList = function(opts)
+        options = opts; opts.owner = opts.owner or {}; return opts.owner
+    end
+    UI.nextTick = function(_, fn) tick = fn end
+    State.book_id = function() return BOOK_ID end
+    WebDAV.download = function(_, url, cb) requests = requests + 1; pending = cb end
+    WebDAV._plan_jump = function() return { xpointer = "/body/p/text().2" } end
+    local plugin = { ui = { document = { file = "book.epub",
+        isXPointerInDocument = function() return true end,
+        getTextFromXPointer = function() return "前缀　真实正文继续向后展开，为这条进度提供完整的原文选段。" end },
+        toc = { getTocTitleByPage = function() captured = captured + 1; return "第十章 重逢" end } } }
+    local entries = {}
+    for i = 1, 5 do entries[i] = { text = "冗长原始文件名" .. i, url = "record" .. i } end
+    WebDAV.choose_history(plugin, entries, function(item) selected = item end)
+    eq("进度选择使用文字记录列表并限制三条", #options.items, 3)
+    check("选择列表有取消且不显示装饰图标", options.compact_footer and options.close_text == "取消" and not options.items[1].icon)
+    eq("显示列表后才按需读取记录", requests, 0)
+    tick()
+    local remote = { book_id = BOOK_ID, device_label = "Kindle", updated_at = 1795530000, text_anchor = "真实正文" }
+    pending(true, remote)
+    eq("章节来自核验后的本机目录", options.items[1].chapter, "第十章 重逢")
+    check("摘要从原书延伸且去除全角空格", options.items[1].excerpt:find("真实正文继续向后展开", 1, true) == 1)
+    check("元信息包含真实时间与设备", options.items[1].meta:find("Kindle",1,true) and options.items[1].meta:find(os.date("%m-%d %H:%M",remote.updated_at),1,true))
+    eq("预览不改远端章节字段", remote.home_chapter, nil)
+    tick(); pending(true, { book_id = "another-book", text_anchor = "其他书的正文" })
+    eq("错书记录不解析章节", captured, 1)
+    eq("错书记录不展示正文", options.items[2].chapter, "无法读取此记录")
+    tick(); pending(false, nil, "missing")
+    eq("单条失败不阻止其余列表展示", options.items[3].chapter, "无法读取此记录")
+    options.items[1].callback()
+    eq("选择仍委托原记录跳转流程", selected, entries[1])
+    WebDAV.choose_history(plugin, entries, function() end)
+    tick(); local late, old_options = pending, options
+    options.on_dismiss(); late(true, remote)
+    eq("关闭后的迟到响应不复活列表", old_options.items[1].chapter, "正在读取章节…")
+    WebDAV.choose_history(plugin, entries, function() end)
+    tick(); local before = captured
+    plugin.ui.document = { file = "different.epub" }; pending(true, remote)
+    eq("切书后的迟到响应不解析旧书", captured, before)
+    Material.recordList, WebDAV.download, WebDAV._plan_jump = saved_list, saved_download, saved_plan
+    UI.nextTick, State.book_id = saved_tick, saved_id
+end
+
 print(string.format("\n合计：%d 通过，%d 失败", passed, failed))
 if failed > 0 then os.exit(1) end
 print("全部通过。")

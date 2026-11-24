@@ -291,22 +291,31 @@ function M.recordList(opts)
     if #items == 0 then group[#group + 1] = label("暂无阅读记录，可返回详情手动读取云端记录。", 15, 3) end
     function panel:onClose() UI:close(self); if opts.back then opts.back() end; return true end
     function panel:onShow() UI:setDirty(self, "ui") end
-    function panel:onCloseWidget() UI:setDirty("all", "ui") end
+    function panel:onCloseWidget()
+        UI:setDirty("all", "ui")
+        if not opts._refreshing and opts.on_dismiss then opts.on_dismiss() end
+    end
     function panel:onSetDimensions() UI:close(self); return true end
     panel.key_events = { Close = { { Device.input.group.Back } } }
     local footer = HG:new{ align = "center" }
     local focus = {}
     local function foot(text, enabled, callback)
-        local button = M.button{ text = text, width = math.floor(inner / 3), height = px(48),
+        local button = M.button{ text = text, width = math.floor(inner / (opts.compact_footer and pages == 1 and 1 or 3)), height = px(48),
             enabled = enabled, callback = callback, show_parent = panel }
         footer[#footer + 1], focus[#focus + 1] = button, button
     end
     local function turn(delta)
+        opts._refreshing = true
         UI:close(panel); opts.number = number + delta; UI:show(M.recordList(opts))
+        opts._refreshing = nil
     end
-    foot("上一页", number > 1, function() if number > 1 then turn(-1) end end)
-    foot(number .. " / " .. pages .. " · 返回", true, function() panel:onClose() end)
-    foot("下一页", number < pages, function() if number < pages then turn(1) end end)
+    if not opts.compact_footer or pages > 1 then
+        foot("上一页", number > 1, function() if number > 1 then turn(-1) end end)
+    end
+    foot((pages > 1 and number .. " / " .. pages .. " · " or "") .. (opts.close_text or "返回"), true, function() panel:onClose() end)
+    if not opts.compact_footer or pages > 1 then
+        foot("下一页", number < pages, function() if number < pages then turn(1) end end)
+    end
     group[#group + 1], panel.layout[#panel.layout + 1] = footer, focus
     panel[1] = require("ui/widget/container/centercontainer"):new{ dimen = panel.dimen,
         M.card(group, { padding = 16, outline = true, radius = 20 }) }

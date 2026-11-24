@@ -643,43 +643,110 @@ function WebDAV.list_folder(plugin, folder_path, callback, include_folders)
     if not dispatched then finish(false, nil, tostring(err)) end
 end
 
--- 显示可读的历史记录列表。只显示最近三条，具体跳转仍由用户确认。
--- extra(可选)是一条**不属于 KO 记录**的附加项(例如静读天下的 .po):
---   { text = "静读天下 · 第 168 章 · 8 分钟前", on_select = function() ... end }
--- 它固定排在最后 —— 它没有和 KO 记录可比的时间轴。
+-- 章节与长选段只从本机核验过的位置读取，不跳页、不修改云端记录。
+function WebDAV.history_preview(plugin, remote)
+    local plan = WebDAV._plan_jump(plugin, remote)
+    local chapter, excerpt
+    if plan and plan.xpointer then
+        chapter = require("inkbridge_home_history").captureChapter(plugin.ui, { xpointer = plan.xpointer })
+        local doc = plugin.ui.document
+        if type(doc.getTextFromXPointer) == "function" then
+            local text = doc:getTextFromXPointer(plan.xpointer)
+            if type(text) == "string" then
+                local suffix = State._utf8_sub_range(text, State._xpointer_text_offset(plan.xpointer) + 1, 160)
+                local normalized = suffix:gsub("%s", ""):gsub("\227\128\128", "")
+                local anchor = remote.text_anchor
+                if type(anchor) == "string" and normalized:sub(1, #anchor) == anchor then
+                    excerpt = State._utf8_sub(normalized, 100)
+                end
+            end
+        end
+    end
+    return chapter or "无法核验章节", excerpt or remote.text_anchor or "暂无正文摘要"
+end
+
+-- 最近三条墨桥记录与可选 Moon+ 记录使用无图标文字卡片，逐条只读补全。
 function WebDAV.choose_history(plugin, entries, on_select, extra)
-    local buttons = {}
+    local items, sources = {}, {}
+    local ui, active = plugin.ui, true
+    local doc = ui and ui.document
+    local book_id = doc and State.book_id(doc.file, ui)
+    local opts, panel
+    local function dismiss() active = false end
+    local function select(callback)
+        return function()
+            dismiss(); UIManager:close(panel); callback()
+        end
+    end
     for i, item in ipairs(entries) do
         if i > 3 then break end
-        table.insert(buttons, {
-            { text = item.text, callback = function()
-                UIManager:close(plugin._history_dialog)
-                on_select(item)
-            end },
-        })
+        items[#items + 1] = { meta = "墨桥 · 正在读取时间与设备…", chapter = "正在读取章节…",
+            excerpt = "正在读取文段…", callback = select(function() on_select(item) end) }
+        sources[#sources + 1] = item
     end
     local has_extra = type(extra) == "table" and type(extra.text) == "string"
     if has_extra then
-        table.insert(buttons, {
-            { text = extra.text, callback = function()
-                UIManager:close(plugin._history_dialog)
-                if type(extra.on_select) == "function" then extra.on_select() end
-            end },
-        })
+        items[#items + 1] = { meta = extra.text, chapter = extra.preview_entry and "正在读取章节…" or "静读天下",
+            excerpt = extra.preview_entry and "正在读取文段…" or "暂无可预览的进度，可点击选择进度文件。",
+            callback = select(function() if extra.on_select then extra.on_select() end end) }
+        sources[#sources + 1] = extra
     end
-    if #buttons == 0 then
+    if #items == 0 then
         show("墨桥：没有找到这本书的历史记录。")
         return
     end
-    table.insert(buttons, {
-        { text = "取消", callback = function() UIManager:close(plugin._history_dialog) end },
-    })
-    plugin._history_dialog = ButtonDialog:new{
+    opts = {
         title = has_extra and "选择要跳转的进度"
-                            or "选择远端历史记录（最近三次）",
-        buttons = buttons,
+                             or "选择远端历史记录（最近三次）",
+        subtitle = "点击记录比较位置，再确认跳转", items = items, on_dismiss = dismiss,
+        close_text = "取消", compact_footer = true,
     }
-    UIManager:show(plugin._history_dialog)
+    panel = Material.recordList(opts)
+    plugin._history_dialog = panel
+    UIManager:show(panel)
+    local function alive()
+        return active and ui and ui.document == doc and plugin._history_dialog == panel
+    end
+    local function refresh()
+        if not alive() then return end
+        opts._refreshing = true
+        UIManager:close(panel); UIManager:show(Material.recordList(opts))
+        opts._refreshing = nil
+    end
+    local function load(index)
+        if not alive() or not items[index] then return end
+        local row, source = items[index], sources[index]
+        local finished = false
+        local function done(ok, remote, err)
+            if finished or not alive() then return end
+            finished = true
+            if ok and type(remote) == "table" and (source == extra or (book_id and remote.book_id == book_id)) then
+                local safe, chapter, excerpt = pcall(WebDAV.history_preview, plugin, remote)
+                row.chapter = safe and chapter or "无法核验章节"
+                row.excerpt = safe and excerpt or remote.text_anchor or "暂无正文摘要"
+                if source ~= extra then
+                    local timestamp = tonumber(remote.updated_at)
+                    row.meta = (timestamp and os.date("%m-%d %H:%M", timestamp) or "时间未记录")
+                        .. " · " .. tostring(remote.device_label or remote.device_id or "远端设备")
+                end
+            elseif source ~= extra or source.preview_entry then
+                row.chapter = "无法读取此记录"
+                row.excerpt = ok and "记录不属于当前书籍或内容无效。" or WebDAV.describe_error(err)
+                row.meta = source == extra and source.text or "墨桥 · 读取失败"
+            end
+            refresh()
+            UIManager:nextTick(function() load(index + 1) end)
+        end
+        local safe, err = pcall(function()
+            if source == extra then
+                done(true, source.preview_entry and source.preview_entry())
+            else
+                WebDAV.download(plugin, source.url, done)
+            end
+        end)
+        if not safe then done(false, nil, tostring(err)) end
+    end
+    UIManager:nextTick(function() load(1) end)
 end
 
 -- ── 「首行对齐」：用首行文字定位，并把落点差几行如实算出来 ────────────────

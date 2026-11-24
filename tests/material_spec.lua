@@ -135,5 +135,19 @@ panel = M.recordList{ title = "空记录", items = {}, back = function() record_
 check("空记录保留返回和明确空态", #panel.record_items == 0 and #panel.layout == 1)
 panel:onClose()
 check("记录返回恢复书籍详情", record_back)
+local dismissed = 0
+W, H = 605, 921
+local selection = { title = "选择要跳转的进度", items = records, compact_footer = true, close_text = "取消",
+    on_dismiss = function() dismissed = dismissed + 1 end }
+panel = M.recordList(selection)
+check("进度列表纵向排列且无图标", #panel.layout[1] == 1 and not panel.layout[1][1].material_icon)
+panel.layout[#panel.layout][3].callback()
+check("记录翻页不取消正在读取的内容", dismissed == 0 and live == panel)
+panel:onClose()
+check("关闭记录列表通知调用方取消读取", dismissed == 1)
+selection.items = { records[1] }; selection.number = 1
+panel = M.recordList(selection)
+check("单页进度选择只保留无图标取消按钮", #panel.layout[#panel.layout] == 1
+    and panel.layout[#panel.layout][1].text == "取消" and not panel.layout[#panel.layout][1].material_icon)
 print(string.format("合计：%d 通过，%d 失败", passed, failed))
 os.exit(failed == 0 and 0 or 1)
