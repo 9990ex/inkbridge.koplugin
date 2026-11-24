@@ -43,7 +43,10 @@ _last_confirm = nil
 package.preload["ui/widget/confirmbox"] = function()
     return { new = function(_, o) _last_confirm = o; return o or {} end }
 end
-package.preload["ui/widget/buttondialog"] = function() return { new = function(_, o) return o or {} end } end
+_last_dialog = nil
+package.preload["ui/widget/buttondialog"] = function()
+    return { new = function(_, o) _last_dialog = o; return o or {} end }
+end
 package.preload["ui/event"]              = function() return { new = function(_, n, a) return { name = n, arg = a } end } end
 package.preload["rapidjson"] = function()
     return {
@@ -879,6 +882,62 @@ do
     _last_confirm.ok_callback()
     eq("点跳转发的是 xpointer 事件", events[1] and events[1].name, "GotoXPointer")
     eq("事件里带上位置", events[1] and events[1].arg, XP_OK)
+end
+
+do
+    local local_entry = { page = 12, total_pages = 100, percent = 0.12, pos_percent = 0.15,
+        home_chapter = "本机章节", text_anchor = "本机正文片段" }
+    local remote = { page = 35, total_pages = 100, percent = 0.35, pos_percent = 0.37,
+        device_label = "Kindle", text_anchor = "远端正文片段" }
+    local summary = WebDAV.sync_preview_text(local_entry, remote)
+    check("位置摘要并列本机和远端页码", summary:find("第 12 / 100 页", 1, true) ~= nil
+        and summary:find("第 35 / 100 页", 1, true) ~= nil, summary)
+    check("位置摘要显示章节、设备和两行正文锚点", summary:find("本机章节", 1, true) ~= nil
+        and summary:find("Kindle", 1, true) ~= nil
+        and summary:find("本机正", 1, true) ~= nil
+        and summary:find("远端正", 1, true) ~= nil, summary)
+    check("正文锚点确实拆成两行", summary:find("正文：“本机正\n　　文片段”", 1, true) ~= nil, summary)
+    check("位置摘要比较正文锚点且显示内容位置", summary:find("正文片段不同", 1, true) ~= nil
+        and summary:find("内容位置 15.00%", 1, true) ~= nil
+        and summary:find("内容位置 37.00%", 1, true) ~= nil, summary)
+    local warning = WebDAV.sync_preview_text(local_entry, remote,
+        { method = "percent", first_line_same = false, line_number = 8 })
+    check("预览保留近似定位与排版差异警告", warning:find("页数比例（近似）", 1, true)
+        and warning:find("第 8 行", 1, true), warning)
+    check("预览字段紧凑排列不会逐行插入空白", not warning:find("本机位置\n\n", 1, true), warning)
+    local absent = WebDAV.sync_preview_text({}, {})
+    check("缺少记录不编造位置或正文一致结论", absent:find("位置未记录", 1, true)
+        and absent:find("正文片段不足，无法比较", 1, true), absent)
+    local stamped = WebDAV.sync_preview_text(local_entry, { updated_at = 1795442828 })
+    check("记录时间取载荷时间而非服务器时区推算", stamped:find(os.date("%m-%d %H:%M", 1795442828), 1, true), stamped)
+
+    local doc = plan_doc({ xpointer_ok = true, text_at = { [XP_OK] = ANCHOR },
+        page_from = { [XP_OK] = 3 }, page_top = { [3] = "page-top-3" },
+        positions = { [XP_OK] = 90000, ["page-top-3"] = 90000 },
+        configurable = { font_size = 10, line_spacing = 100 } })
+    local ui = plan_ui(doc)
+    local events, uploads = {}, 0
+    ui.handleEvent = function(_, event) events[#events + 1] = event end
+    _last_dialog = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR,
+        page = 35, total_pages = 100, device_label = "Kindle" }, {
+            local_entry = local_entry, on_upload = function() uploads = uploads + 1 end,
+        })
+    check("同步前先弹出差异预览", _last_dialog and _last_dialog.title == "同步前位置对比")
+    check("预览提供跳转、上传和取消三种明确选择",
+        _last_dialog and #_last_dialog.buttons == 3)
+    _last_dialog.buttons[3][1].callback()
+    check("取消既不跳转也不调用上传", #events == 0 and uploads == 0)
+    _last_dialog.buttons[2][1].callback()
+    eq("选上传只触发上传回调", uploads, 1)
+    eq("上传选择不跳转", #events, 0)
+
+    _last_dialog = nil
+    WebDAV.confirm_jump({ ui = ui }, { xpointer = XP_OK, text_anchor = ANCHOR }, {
+        local_entry = local_entry, on_upload = function() uploads = uploads + 1 end,
+    })
+    _last_dialog.buttons[1][1].callback()
+    eq("选跳转仍走原 xpointer 定位", events[1] and events[1].name, "GotoXPointer")
 end
 
 do

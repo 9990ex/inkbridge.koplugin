@@ -358,6 +358,7 @@ end
 -- 发起一次手动上传或只读下载。
 function InkBridge:_sync(entry, mode, options)
     if mode == "download" then
+        entry.home_chapter = require("inkbridge_home_history").captureChapter(self.ui, entry)
         local prefix = self:_history_prefix(entry)
         WebDAV.list_history(self, prefix, function(ok, entries, list_err)
             if not ok then
@@ -425,7 +426,15 @@ function InkBridge:_sync(entry, mode, options)
                             show("墨桥：远端记录与当前位置相同。")
                             return
                         end
-                        UIManager:nextTick(function() WebDAV.confirm_jump(self, remote) end)
+                        remote.server_modified = tonumber(item.modification)
+                        UIManager:nextTick(function()
+                            WebDAV.confirm_jump(self, remote, {
+                                local_entry = entry,
+                                on_upload = function()
+                                    self:_with_network(function() self:_sync(entry, "upload") end)
+                                end,
+                            })
+                        end)
                     end)
                 end, extra)
             end)

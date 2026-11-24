@@ -504,6 +504,37 @@ do
     WebDAV.list_history, WebDAV.download, MS.peek_po, MS.import_from_moon, WebDAV.confirm_jump = list, download, peek, import, confirm
 end
 
+do
+    local MS = require("inkbridge_moonsync")
+    local list, download, choose, peek, confirm = WebDAV.list_history, WebDAV.download,
+        WebDAV.choose_history, MS.peek_po, WebDAV.confirm_jump
+    local plugin = new_plugin({ ui = {
+        document = { file = "preview-book.epub", isXPointerInDocument = function() return true end },
+        toc = { getTocTitleByPage = function() return "本机章节" end },
+    } })
+    local entry = { book_id = "preview-id", book_file = "preview-book.epub", book_name = "预览书",
+        xpointer = "local-position", page = 12, total_pages = 100, percent = 0.12,
+        text_anchor = "本机正文" }
+    local opts_seen, expected_remote_time = nil, os.time() - 120
+    local received_remote_time
+    WebDAV.list_history = function(_, _, cb)
+        cb(true, { { url = "/remote-record", modification = expected_remote_time } })
+    end
+    WebDAV.download = function(_, _, cb) cb(true, { book_id = entry.book_id,
+        xpointer = "remote-position", page = 35, total_pages = 100, percent = 0.35,
+        device_label = "Kindle", text_anchor = "远端正文" }) end
+    WebDAV.choose_history = function(_, entries, cb) cb(entries[1]) end
+    MS.peek_po = function(_, cb) cb(nil) end
+    WebDAV.confirm_jump = function(_, remote, opts) opts_seen = opts; received_remote_time = remote.server_modified end
+    plugin:_sync(entry, "download")
+    check("手动下载预览携带当前本机位置", opts_seen and opts_seen.local_entry == entry)
+    eq("本机章节取自阅读器目录", entry.home_chapter, "本机章节")
+    eq("远端列表服务器时间随预览传递", received_remote_time, expected_remote_time)
+    check("预览提供回到本机上传的动作", opts_seen and type(opts_seen.on_upload) == "function")
+    WebDAV.list_history, WebDAV.download, WebDAV.choose_history, MS.peek_po, WebDAV.confirm_jump =
+        list, download, choose, peek, confirm
+end
+
 print("== 7. 云端历史记录的保留策略（每台设备每本书留 3 条）==")
 -- ============================================================================
 -- 这是本项目里**唯一会删用户云端数据**的代码,每一条安全线都要有测试。

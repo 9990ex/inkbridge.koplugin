@@ -1062,6 +1062,84 @@ function WebDAV._do_jump(ui, plan)
     end
 end
 
+local function preview_position(label, entry, remote)
+    entry = entry or {}
+    local lines = { label }
+    local page, total = tonumber(entry.page), tonumber(entry.total_pages)
+    if page and total and total > 0 then
+        local content_percent = tonumber(entry.pos_percent)
+        local detail = content_percent and string.format(" · 内容位置 %.2f%%", content_percent * 100)
+            or (tonumber(entry.percent) and string.format(" · 页序进度 %.2f%%", tonumber(entry.percent) * 100) or "")
+        lines[#lines + 1] = string.format("第 %d / %d 页%s", page, total, detail)
+    elseif tonumber(entry.percent) then
+        lines[#lines + 1] = string.format("进度 %.2f%%", tonumber(entry.percent) * 100)
+    else
+        lines[#lines + 1] = "位置未记录"
+    end
+    local chapter = entry.home_chapter or entry.chapter
+    if type(chapter) == "string" and chapter ~= "" then lines[#lines + 1] = "章节：" .. chapter end
+    local anchor = entry.text_anchor
+    if type(anchor) == "string" and anchor ~= "" then
+        -- 记录载荷只保留短锚点；预览里固定拆成两行，避免窄屏把正文压成一条细小的长行。
+        local chars = State._utf8_len(anchor)
+        local split = math.max(1, math.ceil(chars / 2))
+        local first = State._utf8_sub(anchor, split)
+        local second = anchor:sub(#first + 1)
+        lines[#lines + 1] = "正文：“" .. first
+        if second ~= "" then
+            lines[#lines + 1] = "　　" .. second .. "”"
+        else
+            lines[#lines] = lines[#lines] .. "”"
+        end
+    end
+    if remote then
+        local source = entry.device_label
+        if type(source) == "string" and source ~= "" then lines[1] = label .. "（" .. source .. "）" end
+        local stamp = tonumber(entry.updated_at)
+        if stamp then lines[#lines + 1] = "记录时间：" .. os.date("%m-%d %H:%M", stamp) end
+    end
+    return table.concat(lines, "\n")
+end
+
+function WebDAV.sync_preview_text(local_entry, remote, plan)
+    local local_anchor, remote_anchor = local_entry and local_entry.text_anchor, remote and remote.text_anchor
+    local comparison = "正文片段不足，无法比较"
+    if type(local_anchor) == "string" and local_anchor ~= ""
+        and type(remote_anchor) == "string" and remote_anchor ~= "" then
+        comparison = local_anchor == remote_anchor and "正文片段一致" or "正文片段不同"
+    end
+    local lines = { preview_position("本机位置", local_entry, false), "",
+        preview_position("远端位置", remote, true), "", "比较：" .. comparison }
+    if plan then
+        local methods = {
+            xpointer = "内容锚点",
+            text = "正文搜索",
+            page = "固定版式页码",
+            percent = "页数比例（近似）",
+        }
+        lines[#lines + 1] = "跳转预估：" .. (methods[plan.method] or "无法定位")
+        if plan.first_line_same == false then
+            lines[#lines + 1] = plan.line_number
+                and string.format("首行可能不同：远端正文落在本页第 %d 行", plan.line_number)
+                or "首行可能不同：本机排版与远端不同"
+        end
+    end
+    return table.concat(lines, "\n")
+end
+
+local function show_jump_feedback(plan)
+    if plan.first_line_same == false then
+        if plan.line_number then
+            show(string.format("墨桥：已跳转（本机排版不同，远端那一行在本页第 %d 行）。",
+                plan.line_number))
+        else
+            show("墨桥：已跳转（本机排版不同，首行对不齐）。")
+        end
+    else
+        show("墨桥：已跳转到云端位置。")
+    end
+end
+
 function WebDAV.confirm_jump(plugin, remote, opts)
     local ui = plugin.ui
     if not ui or not ui.document then return end
@@ -1088,16 +1166,39 @@ function WebDAV.confirm_jump(plugin, remote, opts)
         WebDAV._do_jump(ui, plan)
         -- 分页模式下首行对不齐是这个模式的固有粒度(见上面「首行对齐」一节),
         -- 但**不能静默**:知道对不齐就一定要说;行号算不出来时也照样说一句。
-        if plan.first_line_same == false then
-            if plan.line_number then
-                show(string.format("墨桥：已跳转（本机排版不同，远端那一行在本页第 %d 行）。",
-                    plan.line_number))
-            else
-                show("墨桥：已跳转（本机排版不同，首行对不齐）。")
-            end
-        else
-            show("墨桥：已跳转到云端位置。")
+        show_jump_feedback(plan)
+        return
+    end
+
+    if opts and type(opts.on_upload) == "function" and type(opts.local_entry) == "table" then
+        local display_remote = {}
+        for key, value in pairs(remote) do display_remote[key] = value end
+        if not display_remote.home_chapter and plan.xpointer then
+            display_remote.home_chapter = require("inkbridge_home_history").captureChapter(ui,
+                { xpointer = plan.xpointer })
         end
+        local dialog
+        dialog = ButtonDialog:new{
+            title = "同步前位置对比",
+            subtitle = WebDAV.sync_preview_text(opts.local_entry, display_remote, plan),
+            subtitle_height = 460, subtitle_font_size = 17, subtitle_emphasis = true,
+            title_size = 24, title_height = 58, content_gap = 16, footer_gap = 16,
+            card_padding = 24, card_radius = 28, tonal = true,
+            columns = 2, close_text = "取消",
+            buttons = {
+                {{ text = "跳转到远端", icon = "move.down", callback = function()
+                    UIManager:close(dialog)
+                    WebDAV._do_jump(ui, plan)
+                    show_jump_feedback(plan)
+                end }},
+                {{ text = "上传本机", icon = "move.up", callback = function()
+                    UIManager:close(dialog)
+                    opts.on_upload()
+                end }},
+                {{ text = "取消", callback = function() UIManager:close(dialog) end }},
+            },
+        }
+        UIManager:show(dialog)
         return
     end
 

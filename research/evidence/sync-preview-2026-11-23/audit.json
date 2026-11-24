@@ -1,0 +1,220 @@
+{
+  "cancel_preview": {
+    "text": "本机位置\n第 3595 / 5288 页 · 内容位置 67.51%\n章节：第三十二章 报告\n正文：“实际上，如果这天下真有一个人知道李纲永远”\n\n远端位置（Lab-A）\n第 2179 / 5891 页 · 内容位置 36.58%\n章节：第六十六章 无二\n正文：“功渡河到了河北，对河东金国主力部队形成了”\n记录时间：11-23 22:07\n\n比较：正文片段不同\n跳转预估：内容锚点\n首行可能不同：远端正文落在本页第 25 行",
+    "height": 387,
+    "buttons": [
+      {
+        "text": "跳转到远端",
+        "x": 117.5,
+        "y": 467
+      },
+      {
+        "text": "上传本机",
+        "x": 302.5,
+        "y": 467
+      },
+      {
+        "text": "取消",
+        "x": 210,
+        "y": 521
+      }
+    ],
+    "all_lines": 14,
+    "visible_lines": 18
+  },
+  "cancel": {
+    "before": {
+      "xpointer": "/body/DocFragment[376]/body/p[16]/text().0",
+      "pos_percent": 0.6750633322392476,
+      "text_anchor": "实际上，如果这天下真有一个人知道李纲永远",
+      "page": 3595,
+      "schema_version": 1,
+      "updated_at": 1795443547,
+      "book_name": "test",
+      "total_pages": 5288,
+      "percent": 0.6798411497730711,
+      "book_file": "/home/nvidia/ib-sync-preview-lab/B/test.epub"
+    },
+    "after": {
+      "xpointer": "/body/DocFragment[376]/body/p[16]/text().0",
+      "pos_percent": 0.6750633322392476,
+      "text_anchor": "实际上，如果这天下真有一个人知道李纲永远",
+      "page": 3595,
+      "schema_version": 1,
+      "updated_at": 1795443548,
+      "book_name": "test",
+      "total_pages": 5288,
+      "percent": 0.6798411497730711,
+      "book_file": "/home/nvidia/ib-sync-preview-lab/B/test.epub"
+    },
+    "cloud_unchanged": true
+  },
+  "A_to_B_preview": {
+    "text": "本机位置\n第 3595 / 5288 页 · 内容位置 67.51%\n章节：第三十二章 报告\n正文：“实际上，如果这天下真有一个人知道李纲永远”\n\n远端位置（Lab-A）\n第 2179 / 5891 页 · 内容位置 36.58%\n章节：第六十六章 无二\n正文：“功渡河到了河北，对河东金国主力部队形成了”\n记录时间：11-23 22:07\n\n比较：正文片段不同\n跳转预估：内容锚点\n首行可能不同：远端正文落在本页第 25 行",
+    "height": 387,
+    "buttons": [
+      {
+        "text": "跳转到远端",
+        "x": 117.5,
+        "y": 467
+      },
+      {
+        "text": "上传本机",
+        "x": 302.5,
+        "y": 467
+      },
+      {
+        "text": "取消",
+        "x": 210,
+        "y": 521
+      }
+    ],
+    "all_lines": 14,
+    "visible_lines": 18
+  },
+  "A_to_B": {
+    "source": {
+      "book_file": "/home/nvidia/ib-sync-preview-lab/A/test.epub",
+      "page": 2179,
+      "total_pages": 5891,
+      "xpointer": "/body/DocFragment[243]/body/p[161]/text().48",
+      "percent": 0.3698862671872348,
+      "pos_percent": 0.3658169410709242,
+      "text_anchor": "功渡河到了河北，对河东金国主力部队形成了",
+      "book_name": "test",
+      "updated_at": 1795443550,
+      "schema_version": 1
+    },
+    "target": {
+      "xpointer": "/body/DocFragment[243]/body/p[161]/text().48",
+      "pos_percent": 0.36539652552175805,
+      "text_anchor": "功渡河到了河北，对河东金国主力部队形成了",
+      "page": 1969,
+      "schema_version": 1,
+      "updated_at": 1795443550,
+      "book_name": "test",
+      "total_pages": 5288,
+      "percent": 0.3723524962178517,
+      "book_file": "/home/nvidia/ib-sync-preview-lab/B/test.epub"
+    },
+    "target_page": 1969,
+    "cloud_unchanged": true
+  },
+  "upload_preview": {
+    "text": "本机位置\n第 3595 / 5288 页 · 内容位置 67.51%\n章节：第三十二章 报告\n正文：“实际上，如果这天下真有一个人知道李纲永远”\n\n远端位置（Lab-A）\n第 2179 / 5891 页 · 内容位置 36.58%\n章节：第六十六章 无二\n正文：“功渡河到了河北，对河东金国主力部队形成了”\n记录时间：11-23 22:07\n\n比较：正文片段不同\n跳转预估：内容锚点\n首行可能不同：远端正文落在本页第 25 行",
+    "height": 387,
+    "buttons": [
+      {
+        "text": "跳转到远端",
+        "x": 117.5,
+        "y": 467
+      },
+      {
+        "text": "上传本机",
+        "x": 302.5,
+        "y": 467
+      },
+      {
+        "text": "取消",
+        "x": 210,
+        "y": 521
+      }
+    ],
+    "all_lines": 14,
+    "visible_lines": 18
+  },
+  "upload_local": {
+    "before": {
+      "xpointer": "/body/DocFragment[376]/body/p[16]/text().0",
+      "pos_percent": 0.6750633322392476,
+      "text_anchor": "实际上，如果这天下真有一个人知道李纲永远",
+      "page": 3595,
+      "schema_version": 1,
+      "updated_at": 1795443551,
+      "book_name": "test",
+      "total_pages": 5288,
+      "percent": 0.6798411497730711,
+      "book_file": "/home/nvidia/ib-sync-preview-lab/B/test.epub"
+    },
+    "after": {
+      "xpointer": "/body/DocFragment[376]/body/p[16]/text().0",
+      "pos_percent": 0.6750633322392476,
+      "text_anchor": "实际上，如果这天下真有一个人知道李纲永远",
+      "page": 3595,
+      "schema_version": 1,
+      "updated_at": 1795443552,
+      "book_name": "test",
+      "total_pages": 5288,
+      "percent": 0.6798411497730711,
+      "book_file": "/home/nvidia/ib-sync-preview-lab/B/test.epub"
+    },
+    "record": {
+      "sv": 1,
+      "pg": 3595,
+      "t": 1795443551,
+      "p": 0.67984,
+      "di": "sync-preview-B",
+      "dl": "Lab-B",
+      "ta": "实际上，如果这天下真有一个人知道李纲永远",
+      "tp": 5288,
+      "pp": 0.67506,
+      "xp": "/body/DocFragment[376]/body/p[16]/text().0",
+      "id": "449824d0df9a5c76f9434ed5d62b8f2b"
+    }
+  },
+  "B_to_A_preview": {
+    "all_lines": 14,
+    "visible_lines": 18,
+    "height": 558,
+    "text": "本机位置\n第 2179 / 5891 页 · 内容位置 36.58%\n章节：第六十六章 无二\n正文：“功渡河到了河北，对河东金国主力部队形成了”\n\n远端位置（Lab-B）\n第 3595 / 5288 页 · 内容位置 67.51%\n章节：第三十二章 报告\n正文：“实际上，如果这天下真有一个人知道李纲永远”\n记录时间：11-23 22:19\n\n比较：正文片段不同\n跳转预估：内容锚点\n首行可能不同：远端正文落在本页第 8 行",
+    "buttons": [
+      {
+        "x": 168.5,
+        "text": "跳转到远端",
+        "y": 614
+      },
+      {
+        "x": 434.5,
+        "text": "上传本机",
+        "y": 614
+      },
+      {
+        "x": 302,
+        "text": "取消",
+        "y": 691.5
+      }
+    ]
+  },
+  "B_to_A": {
+    "source": {
+      "xpointer": "/body/DocFragment[376]/body/p[16]/text().0",
+      "pos_percent": 0.6750633322392476,
+      "text_anchor": "实际上，如果这天下真有一个人知道李纲永远",
+      "page": 3595,
+      "schema_version": 1,
+      "updated_at": 1795443551,
+      "book_name": "test",
+      "total_pages": 5288,
+      "percent": 0.6798411497730711,
+      "book_file": "/home/nvidia/ib-sync-preview-lab/B/test.epub"
+    },
+    "target": {
+      "book_file": "/home/nvidia/ib-sync-preview-lab/A/test.epub",
+      "page": 3997,
+      "total_pages": 5891,
+      "xpointer": "/body/DocFragment[376]/body/p[16]/text().0",
+      "percent": 0.6784926158546936,
+      "pos_percent": 0.6756001727833065,
+      "text_anchor": "实际上，如果这天下真有一个人知道李纲永远",
+      "book_name": "test",
+      "updated_at": 1795443553,
+      "schema_version": 1
+    },
+    "target_page": 3997,
+    "cloud_unchanged": true
+  },
+  "book_hashes": {
+    "A": "553f53a2c5642d6d3f6df9a56015edb4bd218ef7a91f880b324e6100a22aaba7",
+    "B": "553f53a2c5642d6d3f6df9a56015edb4bd218ef7a91f880b324e6100a22aaba7"
+  }
+}

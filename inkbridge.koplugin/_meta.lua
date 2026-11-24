@@ -8,5 +8,5 @@
 return {
     fullname = "InkBridge+ / 墨桥+",
     description = "轻量阅读进度同步工具，兼容 InkBridge 与静读天下",
-    version = "0.3.30-alpha",
+    version = "0.3.31-alpha",
 }

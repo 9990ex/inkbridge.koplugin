@@ -119,6 +119,7 @@ function M.sheet(opts)
     local W, H = Screen:getWidth(), Screen:getHeight()
     local width = math.min(W - px(32), px(560))
     local inner = width - px(40)
+    local subtitle_height = math.min(px(opts.subtitle_height or 44), math.max(px(64), H - px(260)))
     local actions, descriptions, dismiss_action = {}, {}, nil
     for _, row in ipairs(opts.buttons or {}) do
         for _, action in ipairs(row) do actions[#actions + 1] = action end
@@ -148,6 +149,7 @@ function M.sheet(opts)
     opts._material_owner = panel
     panel.buttons, panel.item_table, panel.title = opts.buttons, opts.item_table, opts.title
     panel.material = true
+    panel.material_subtitle_height = subtitle_height
     panel.material_page, panel.material_pages = number, pages
     panel.layout = {}
     panel.dimen = Geom:new{ w = W, h = H }
@@ -172,15 +174,18 @@ function M.sheet(opts)
     panel.key_events = { Close = { { Device.input.group.Back } } }
     local group = VG:new{ align = "left" }
     group[#group + 1] = Text:new{ text = opts.title or "墨桥", width = inner,
-        face = Font:getFace("cfont", 23), bold = true, height = px(56), height_adjust = true,
+        face = Font:getFace("cfont", opts.title_size or 23), bold = true, height = px(opts.title_height or 56), height_adjust = true,
         height_overflow_show_ellipsis = true }
     local subtitle = opts.subtitle or table.concat(descriptions, "\n")
     if subtitle ~= "" then
-        group[#group + 1] = Text:new{ text = subtitle, width = inner, face = Font:getFace("cfont", 13),
-            fgcolor = require("ffi/blitbuffer").COLOR_DARK_GRAY, height = px(44), height_adjust = true,
+        group[#group + 1] = Text:new{ text = subtitle, width = inner,
+            face = Font:getFace("cfont", opts.subtitle_font_size or 13),
+            fgcolor = opts.subtitle_emphasis and require("ffi/blitbuffer").COLOR_BLACK
+                or require("ffi/blitbuffer").COLOR_DARK_GRAY,
+            height = subtitle_height, height_adjust = true,
             height_overflow_show_ellipsis = true }
     end
-    group[#group + 1] = VS:new{ width = px(12) }
+    group[#group + 1] = VS:new{ width = px(opts.content_gap or 12) }
     local tile_width = math.floor((inner - px(8) * (columns - 1)) / columns)
     local row, focus
     for index = (number - 1) * per_page + 1, math.min(number * per_page, #actions) do
@@ -220,7 +225,7 @@ function M.sheet(opts)
             if number > 1 then UI:close(panel); opts.material_page = number - 1; UI:show(M.sheet(opts)) end
         end)
     end
-    footerButton(opts.back and "返回" or "关闭", opts.back and "chevron.left" or "close", function()
+    footerButton(opts.back and "返回" or opts.close_text or "关闭", opts.back and "chevron.left" or "close", function()
         panel:onClose()
     end)
     if pages > 1 then
@@ -228,10 +233,13 @@ function M.sheet(opts)
             if number < pages then UI:close(panel); opts.material_page = number + 1; UI:show(M.sheet(opts)) end
         end)
     end
-    group[#group + 1] = VS:new{ width = px(12) }
+    group[#group + 1] = VS:new{ width = px(opts.footer_gap or 12) }
     group[#group + 1] = footer
     panel.layout[#panel.layout + 1] = focus_footer
-    panel[1] = Center:new{ dimen = Geom:new{ w = W, h = H }, M.card(group, { padding = 20, outline = true, radius = 24 }) }
+    panel[1] = Center:new{ dimen = Geom:new{ w = W, h = H }, M.card(group, {
+        padding = opts.card_padding or 20, outline = true, radius = opts.card_radius or 24,
+        tonal = opts.tonal,
+    }) }
     panel.material_actions = actions
     if panel.refocusWidget then panel:refocusWidget() end
     return panel

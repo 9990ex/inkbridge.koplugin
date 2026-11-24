@@ -67,6 +67,22 @@ local footer = panel.layout[#panel.layout]
 footer[#footer].callback()
 check("翻页保持同一弹窗引用", live == panel and panel.material_page == first_page + 1)
 check("翻页仍可关闭最初的弹窗对象", closed == panel)
+panel = M.sheet{ title = "同步前位置对比", subtitle = "本机位置\n远端位置", subtitle_height = 216,
+    subtitle_font_size = 17, subtitle_emphasis = true, close_text = "取消",
+    buttons = {{ { text = "跳转到远端", callback = function() end } }} }
+check("差异预览可容纳多行位置摘要", panel.material_subtitle_height == 216)
+local preview_text = panel[1][1][1][2]
+check("位置预览使用可读字号且不被弱化", preview_text.face.size == 17 and preview_text.height == 216)
+check("位置预览保留明确取消按钮", panel.layout[#panel.layout][1].text == "取消")
+panel = M.sheet{ title = "同步前位置对比", title_size = 24, title_height = 58,
+    content_gap = 16, footer_gap = 16, card_padding = 24, card_radius = 28, tonal = true,
+    subtitle = "正文：第一行\n　　第二行", subtitle_height = 460,
+    subtitle_font_size = 17, subtitle_emphasis = true,
+    buttons = {{ { text = "跳转到远端", icon = "move.down", callback = function() end },
+        { text = "上传本机", icon = "move.up", callback = function() end } }} }
+check("预览弹窗采用专用标题层级和留白", panel.material_subtitle_height == 460
+    and panel[1][1].radius == 28 and panel[1][1].padding == 24)
+check("预览正文使用强调字号", panel[1][1][1][2].face.size == 17)
 local called = false
 panel = M.sheet{ title = "状态", buttons = {{ { text = "自动核对", checked_func = function() return true end,
     callback = function() called = true end }, { text = "关闭", callback = function() called = "closed" end } }} }
