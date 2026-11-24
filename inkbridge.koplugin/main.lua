@@ -915,8 +915,8 @@ function InkBridge:_install_update(rel)
     if not digest then
         return false, "GitHub 发布没有可验证的 SHA-256，已拒绝安装"
     end
-    if rel.asset_url:sub(1, #"https://github.com/" .. Update.REPO .. "/releases/download/")
-            ~= "https://github.com/" .. Update.REPO .. "/releases/download/" then
+    local release_prefix = "https://github.com/" .. Update.REPO .. "/releases/download/"
+    if rel.asset_url:sub(1, #release_prefix) ~= release_prefix then
         return false, "更新下载地址不是官方 GitHub Release 地址"
     end
     if rel.asset_name ~= "inkbridge.moon.koplugin-" .. rel.tag .. ".zip"
@@ -940,6 +940,7 @@ function InkBridge:_install_update(rel)
     if ok_sockutil then socketutil:set_timeout(socketutil.FILE_BLOCK_TIMEOUT, socketutil.FILE_TOTAL_TIMEOUT) end
     local downloaded, limit = 0, tonumber(rel.asset_size)
     local sink = function(chunk, sink_err)
+        if sink_err then return nil, sink_err end
         if chunk then
             downloaded = downloaded + #chunk
             if downloaded > 20 * 1024 * 1024 or (limit and downloaded > limit) then
@@ -947,8 +948,6 @@ function InkBridge:_install_update(rel)
             end
             local wrote, write_err = file:write(chunk)
             if not wrote then return nil, write_err end
-        else
-            return file:close()
         end
         return 1
     end
@@ -964,16 +963,20 @@ function InkBridge:_install_update(rel)
         }
         return transport_result, http_code
     end)
+    -- 下载文件由本层统一关闭；网络库可能多次结束 sink 或在结束后报错。
+    local closed, close_err = file:close()
     if ok_sockutil then socketutil:reset_timeout() end
     if not request_ok then
-        file:close()
         os.remove(archive)
         return false, "下载更新包失败：" .. tostring(result)
     end
-    if tonumber(status) ~= 200 then
-        file:close()
+    if not result or tonumber(status) ~= 200 then
         os.remove(archive)
         return false, "下载更新包失败：HTTP " .. tostring(status or result)
+    end
+    if not closed then
+        os.remove(archive)
+        return false, "无法保存更新包：" .. tostring(close_err)
     end
     if downloaded ~= limit then
         os.remove(archive)
@@ -996,7 +999,9 @@ function InkBridge:_confirm_install_update(rel)
         ok_callback = function()
             show("墨桥：正在下载更新…")
             UIManager:nextTick(function()
-                local ok, err = self:_install_update(rel)
+                -- 模块加载、解压等异常也必须转成提示，不能退出 KOReader 的 UI 循环。
+                local safe, ok, err = pcall(self._install_update, self, rel)
+                if not safe then ok, err = false, ok end
                 if not ok then
                     show("墨桥：更新失败。\n" .. tostring(err))
                     return

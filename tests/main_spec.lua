@@ -912,6 +912,80 @@ do
     for _, name in ipairs(module_names) do package.loaded[name] = saved[name] end
 end
 
+print("== 更新下载失败与安装异常防止闪退 ==")
+do
+    local modules = { "socket.http", "ltn12", "socketutil", "inkbridge_update_install" }
+    local saved = {}
+    for _, name in ipairs(modules) do saved[name] = package.loaded[name] end
+    local mode, resets, installs, requests = "403", 0, 0, 0
+    package.loaded["ltn12"] = {}
+    package.loaded["socketutil"] = {
+        set_timeout = function() end,
+        reset_timeout = function() resets = resets + 1 end,
+    }
+    package.loaded["inkbridge_update_install"] = { install = function(path)
+        installs = installs + 1
+        local file = assert(io.open(path, "rb"))
+        local body = file:read("*a"); file:close()
+        assert(body == "zip", "安装前下载文件必须关闭并完整落盘")
+        if mode == "install_exception" then error("archive library unavailable") end
+        return true
+    end }
+    package.loaded["socket.http"] = { request = function(req)
+        requests = requests + 1
+        assert(req.sink("zip"))
+        if mode ~= "no_eof" then assert(req.sink(nil)); assert(req.sink(nil)) end
+        if mode == "exception_after_close" then error("connection interrupted") end
+        if mode == "timeout_after_close" then return nil, "timeout" end
+        if mode == "403" then return 1, 403 end
+        if mode == "404" then return 1, 404 end
+        if mode == "failed_200" then return nil, 200 end
+        return 1, 200
+    end }
+    local rel = { tag = "v0.3.32-alpha", asset_name = "inkbridge.moon.koplugin-v0.3.32-alpha.zip",
+        asset_url = "https://github.com/9990ex/inkbridge.koplugin/releases/download/v0.3.32-alpha/inkbridge.moon.koplugin-v0.3.32-alpha.zip",
+        asset_size = 3, asset_digest = "sha256:" .. string.rep("a", 64) }
+    local archive = require("datastorage"):getDataDir() .. "/inkbridge-update/" .. rel.asset_name
+    for _, value in ipairs({ "403", "404", "exception_after_close", "timeout_after_close" }) do
+        mode = value
+        local safe, ok, err = pcall(InkBridge._install_update, new_plugin(), rel)
+        check("网络结束回调后仍安全报告失败：" .. value, safe and ok == false, safe and err or ok)
+        check("失败路径清理下载文件：" .. value, not file_exists(archive))
+        check("失败保留真实网络错误：" .. value, safe and type(err) == "string"
+            and (err:find(value:match("^%d+$") or (value == "exception_after_close" and "connection interrupted" or "timeout"), 1, true)))
+    end
+    eq("失败网络请求不安装插件", installs, 0)
+    eq("失败网络请求恢复超时设置", resets, 4)
+    mode = "failed_200"
+    local safe, ok = pcall(InkBridge._install_update, new_plugin(), rel)
+    check("HTTP 200 但传输失败时不安装", safe and ok == false and installs == 0)
+    for _, value in ipairs({ "success", "no_eof" }) do
+        mode = value
+        local safe, ok = pcall(InkBridge._install_update, new_plugin(), rel)
+        check("官方地址可完成下载及安装：" .. value, safe and ok == true)
+    end
+    local original_url, before = rel.asset_url, requests
+    for _, url in ipairs({
+        "https://github.com/other/repo/releases/download/v0.3.32-alpha/a.zip",
+        "https://github.com.evil.example/9990ex/inkbridge.koplugin/releases/download/a.zip",
+        "http://github.com/9990ex/inkbridge.koplugin/releases/download/a.zip",
+    }) do
+        rel.asset_url = url
+        local safe, ok, err = pcall(InkBridge._install_update, new_plugin(), rel)
+        check("非官方下载地址明确拒绝且不抛异常", safe and ok == false and err:find("不是官方", 1, true))
+    end
+    eq("非官方地址不发起网络请求", requests, before)
+    rel.asset_url = original_url
+    mode = "install_exception"
+    local plugin = new_plugin()
+    plugin:_confirm_install_update(rel)
+    local safe = pcall(confirm_cb)
+    check("安装器异常不逃逸到UI循环", safe)
+    contains("安装器异常显示可诊断失败原因", shown[#shown].text, "archive library unavailable")
+    os.remove(archive)
+    for _, name in ipairs(modules) do package.loaded[name] = saved[name] end
+end
+
 -- 收尾：清掉测试用的设置目录
 if is_windows then
     os.execute('rmdir /s /q "' .. SETTINGS_DIR .. '" 2>' .. null_device)

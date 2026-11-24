@@ -6,7 +6,7 @@
 
 ## 硬性要求
 
-1. **改任何 Lua 代码后必须跑完整回归测试**（1953 条断言，用桩替换 KOReader 的界面/网络模块，
+1. **改任何 Lua 代码后必须跑完整回归测试**（1976 条断言，用桩替换 KOReader 的界面/网络模块，
    **不需要设备**）：
 
    ```bash
@@ -16,7 +16,7 @@
     luajit tests/update_spec.lua     #  59 条  版本比较、release 解析与安装包校验
     luajit tests/update_install_spec.lua # 13 条  ZIP 拒绝、事务替换与失败恢复
     luajit tests/webdav_spec.lua     # 311 条  云存储层、实际排版行号与恢复原页、首页远端正文采集、逐条条件删除、同步前位置预览
-      luajit tests/main_spec.lua       # 176 条  主流程、桥墨平级页签与顺序、书籍工具原生委托、图标安装、关书自动上传、保留策略、设备名探测、状态页与更新流程
+      luajit tests/main_spec.lua       # 199 条  主流程、桥墨平级页签与顺序、书籍工具原生委托、图标安装、关书自动上传、保留策略、设备名探测、状态页与更新流程、下载失败与安装异常
     luajit tests/menu_spec.lua       # 33 条  原生下拉圆形图标、透明背景、间距、去除黑色反馈、动作委托、页签隔离、窄屏与DPI、配置刷新、子菜单返回
     luajit tests/rebuild_spec.lua    # 121 条  正文保留、章节识别与误判防护、卷层级、脚本内容、spine、打包回读、失败清理、取消、新副本身份、实际进度与节流
    luajit tests/state_spec.lua      #  82 条  位置记录本身、首页章节不进入同步载荷
